@@ -30,7 +30,28 @@ CLAUDE.md    ← 本文件
 python -m http.server 8000    # 然后开 http://localhost:8000
 ```
 
-**验证只能靠手动**：改完后打开页面，走一遍「记一条饮食 → 切到训练加一个动作 → 看趋势 → 设置里改系数」，确认没有 JS 报错（开控制台看）。目前没有任何自动化测试。
+### 自动化验证（headless Edge）
+
+这台机器上没有 node / python，但 Edge 能跑 headless，足够做真实的运行时测试。做法是**把测试装置注入 index.html 的副本**（不污染仓库）：顶层 `let`/`const` 声明在同一个文档的其它 classic script 里可见，所以注入的脚本能直接调 `S` / `render()` / `merge()` 等。
+
+```powershell
+$edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+# 1. 读 index.html，把 </body> 换成 <pre id="testout"></pre> + 断言脚本，另存到临时目录
+# 2. 跑：
+Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox',
+  "--user-data-dir=$tmp\profile",'--allow-file-access-from-files',
+  '--virtual-time-budget=8000','--dump-dom',"file:///$tmp/test.html" `
+  -Wait -NoNewWindow -RedirectStandardOutput "$tmp\dom.txt"
+# 3. 从 dom.txt 里正则抠出 <pre id="testout"> 的内容
+```
+
+坑：
+- **必须用 `Start-Process -RedirectStandardOutput`**，直接 `& $edge ... > file` 拿不到输出。
+- `--window-size` 在这个 Edge 版本里**不生效**，视口恒为 477px。要验证窄屏版式，注入 `<style>#app{max-width:360px !important}</style>` 再比较各元素的 `getBoundingClientRect().right` 和 `#app` 的右边界。
+- `.chips` 本来就是横向滚动的，它「溢出」是设计如此，不是 bug。
+- 截图用 `--screenshot=<path>`；图片会按 `--window-size` 裁剪而不是缩放，所以窄图会**假装**成内容被切掉，别被骗。
+
+最近一次全量验证：51 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
 
 ## 设计约束（改代码前先读）
 
@@ -54,8 +75,11 @@ python -m http.server 8000    # 然后开 http://localhost:8000
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
 | `computed` | `weightOn()` / `targets()` / `eatenOn()` / `exOn()` / `volOf()` |
 | `render` | `render()` 总调度 + 四个 tab 的渲染函数 |
-| `训练` | 周视图、动作编辑 sheet |
+| `训练计划` | `curPlan/planDay/planStat/doneRec/lastWt/togglePlanItem` |
+| `训练` | 周视图、当日计划打勾、动作编辑 sheet |
+| `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
 | `趋势` | 近 14 天条形图 |
+| `动作进展` | `exSessions/metricOf/curveSVG/progressCard` |
 | `设置` | 体重系数、同步配置、数据导入导出 |
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
@@ -76,15 +100,17 @@ let cursor  // 今日页当前日期 "YYYY-MM-DD"
 let wkCursor// 训练页当前周的周一
 let meal    // 当前选中餐次
 let pending // review sheet 里待确认的条目数组
+let draft   // 正在编辑的分化副本，保存前不碰 S.plans
+let trendEx // 进展曲线当前选中的动作名
 ```
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 2`）
+### 数据模型（`S`，schema `v: 3`）
 
 ```js
 {
-  v: 2,
+  v: 3,
   weight: 70,                    // 兜底体重，只在 weights 为空时用
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
@@ -96,6 +122,11 @@ let pending // review sheet 里待确认的条目数组
   weights:  { "2026-07-31": { v: 72.5, ts } },
   lib:      { "鸡胸肉": { c: 0, p: 23.1, f: 1.9, ts } },   // 每 100g
   tomb:     { "<被删记录的 id>": ts },                      // 墓碑，120 天后清理
+
+  plans: [{ id, name, ts,
+    days: [ { name: "推", items: [{ name, sets, reps, wt }] }, … ]  // 恒为 7 项，周一..周日
+  }],                            // items 为空 = 休息日
+  activePlan: "<plan id>",       // 当前生效的分化，跟设置一起 LWW
 
   sync: { token, gistId, last }  // ← 仅本机，不进 syncPayload()
 }
@@ -120,9 +151,9 @@ let pending // review sheet 里待确认的条目数组
 
 | 字段 | 策略 |
 |---|---|
-| `entries` / `workouts` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
+| `entries` / `workouts` / `plans` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
 | `weights` / `lib` | 按 key 逐条 last-write-wins（比 `ts`） |
-| 设置（weight/kc/kp/kf） | 整体按 `settingsTs` last-write-wins |
+| 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
 | `tomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 
 触发点：`queueSync()`（4 秒防抖）、页面重新可见、`online` 事件、设置页手动按钮。`#syncdot` 是右上角状态灯（灰=闲 / 橙=同步中 / 绿=成功 / 红=失败）。
@@ -137,6 +168,37 @@ let pending // review sheet 里待确认的条目数组
 
 确认保存时会把该食物的每 100g 数值**写回 `S.lib`**，下次就能走路径 1。
 
+### 训练计划怎么工作
+
+核心设计：**「完成」不是一个字段，而是「当天存在同名的 `workouts` 记录」**（`doneRec(date, name)`）。
+
+这么做的好处，改动这块前务必理解：
+
+- `workouts` 仍是训练历史的唯一真相，容量统计、CSV 导出、进展曲线、merge 全都不用动。
+- 手动记的和打勾记的是同一份数据 —— 你自己加一条「深蹲」，计划里的深蹲会自动变成已完成。
+- 打勾 = `push` 一条 `workouts`；取消打勾 = `removeRec`（写墓碑），所以多端同步天然一致。
+
+配套细节：
+
+- 打勾时组数/次数取计划值，重量取 `it.wt || lastWt(name, date)` —— 也就是**你上次练这个动作的重量**，做渐进超负荷时不用每次重填。
+- 分化按**星期**铺（`dowIndex()` 周一=0），不是按 N 天循环。7 个槽位，`items` 为空即休息日。
+- 当天记了但不在计划里的动作，归到「计划外」分组单独列。
+- 编辑分化时改的是 `draft`（`S.plans` 里那条的深拷贝），只有点「保存」才写回。`closeSheet()` 会清掉 `draft`。
+- `planDaySheet` 的 `grab()` **故意不过滤空名字的行**，否则删除按钮的下标会跟渲染时的下标错位；过滤只在离开该页和 `savePlan()` 时做。
+
+### 进展曲线
+
+`exSessions(name)` 把同一天同一动作的多条记录并成一次「训练课」，然后 `metricOf()` 按数据形态自动选指标：
+
+| 条件 | 指标 |
+|---|---|
+| 有重量 | 预估 1RM（Epley：`wt × (1 + reps/30)`） |
+| 徒手但有次数 | 总次数 |
+| 只有时长 | 时长 |
+| 其它 | 组数 |
+
+图是手写的内联 SVG（`curveSVG()`），没有任何图表库：单序列所以不需要图例，标题即系列名；只直接标注首尾两点的值，中间的点靠点击更新下方读数；每个点额外叠一个 `r=13` 的透明圆做触摸目标。下方的「最近记录」列表同时充当非图形的可读回退。
+
 ## 已知问题
 
 > v2 重构（`c4b2e6b`）曾把 `review()` / `pasteSheet()` / `copyText()` 删掉但留下了调用点，导致除「手动」外的所有录入路径 `ReferenceError`。已在 `2026-07-31.2` 修复：`review/drawItems/commit` 从 v1 取回，`parseItems/pasteSheet/copyText/legacyCopy` 为新写。改 `submit()` 那条链路时注意别再断。
@@ -144,7 +206,8 @@ let pending // review sheet 里待确认的条目数组
 现存的坑：
 
 - **食物库删除会被同步复活。** `showLib()` 删条目只是 `delete S.lib[name]`，没有墓碑；下次同步时远端那条会被 merge 回来。要真删得给 `lib` 也加墓碑机制。
-- **`KEY = "macros_v1"` 但 schema 是 `v: 2`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里的 `o.v < 2` 分支。
+- **`KEY = "macros_v1"` 但 schema 已经是 `v: 3`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里的 `o.v < 2` / `o.v < 3` 分支。
+- **同名动作只会匹配到一条计划项。** `doneRec()` 取第一条同名记录；同一天同一动作记了两次，第二条会落到「计划外」分组。统计和曲线不受影响（`exSessions` 会把它们并起来）。
 - **`quickParse()` 的模糊匹配靠 `Object.keys()` 顺序**，第一个 `includes` 命中就赢，结果不稳定。
 - **编辑已有饮食记录不能改日期和餐次**（`manualSheet(rec)` 只改 name/g/c/p/f）。
 - **`removeRec()` 自己不 render**，所有调用点都得手动跟一个 `render()`。
@@ -152,18 +215,25 @@ let pending // review sheet 里待确认的条目数组
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-07-31"`，用日期串）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-07-31.3"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
 - 移动端安全区：新增贴边容器记得带 `env(safe-area-inset-*)`。
+- **复用别处的 class 时先看选择器有没有被限定父级。** 比如 `.ex1` 的排版规则写成 `.exrow .ex1 b{…}`，在新的 `.prow` 里复用 `.ex1` 就完全不生效（表现是名字和明细挤成一行、`<i>` 变斜体）。新增容器时把它加进选择器列表，别复制一份样式。
 - 提交信息沿用中文短句风格（`每日营养摄入追踪表v3`）。
 
 ## 路线图
 
-用户的目标是「营养摄入追踪表 **+ 健身训练计划表**」，训练侧目前只完成了一半：
+营养侧和训练侧的主体都已完成：
 
-- ✅ 已有：按日记录动作、周视图、组数/容量汇总、CSV 导出
-- ❌ 缺少「计划」：训练模板 / 分化（推拉腿等）、把模板套到某一周生成待做清单、完成打勾、按动作看重量进展曲线、渐进超负荷提示
+- ✅ 营养：三大营养素目标/剩余、四餐分组、食物库、趋势、CSV
+- ✅ 训练记录：按日记录、周视图、组数/容量汇总、CSV
+- ✅ 训练计划：分化模板（3 个内置预设）、按星期铺开、打勾完成、周完成度、按动作的进展曲线
 
-做「计划」时的自然扩展点：在 `S` 里加 `plans`（模板）与 `workouts` 上的 `planId` / `done` 字段，训练页从「日志」改成「今日计划 + 已完成」两段，模板管理放设置页。注意上面「新增持久化字段」的四处同步。
+还没做、想做可以从这里接：
+
+- **渐进超负荷提示** —— 数据已经够了（`exSessions` + `lastWt`），可以在打勾时提示「上次 4×6 @60，这次试 62.5」
+- **分化按 N 天循环**而不是绑星期（现在 `planDay()` 直接用 `dowIndex()`，改这里要同时改周视图的呈现）
+- **组级记录** —— 现在一个动作一条记录，练到一半改重量只能记平均；要精确得让 `workouts` 带一个 `sets:[{reps,wt}]` 数组（注意四处同步 + `volOf` + CSV）
+- **休息计时器**、**动作示范图** —— 都需要额外资源，跟「单文件零依赖」的约束冲突，想清楚再做
