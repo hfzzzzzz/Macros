@@ -66,6 +66,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .mealhead .mk{font-family:var(--mono);letter-spacing:0}
 .row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(46,52,68,.5)}
 .row:last-child{border-bottom:none}
+.row .rtap{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
 .row .name{flex:1;min-width:0}
 .row .name b{display:block;font-weight:500;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .name i{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
@@ -120,6 +121,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .cbar button{flex:none;height:40px;padding:0 15px;border-radius:11px;background:var(--ink);
   color:var(--ground);font-weight:600;font-size:14px}
 .cbar button:disabled{opacity:.4}
+.cbar button.alt{background:var(--surface-2);color:var(--ink-mute);font-weight:500;padding:0 12px}
 .hint{font-size:11px;color:var(--ink-faint);margin-top:6px;font-family:var(--mono)}
 
 #sheet{position:fixed;inset:0;background:rgba(10,11,15,.72);-webkit-backdrop-filter:blur(6px);
@@ -148,6 +150,15 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .sheetact .go{background:var(--ink);color:var(--ground)}
 .sheetact .danger{background:var(--surface-2);color:var(--over);flex:0 0 88px}
 
+.step{display:flex;gap:11px;background:var(--surface);border-radius:12px;padding:12px;margin-bottom:9px}
+.step>b{flex:none;width:21px;height:21px;border-radius:50%;background:var(--surface-2);
+  color:var(--ink-mute);font-family:var(--mono);font-size:11px;font-weight:600;
+  display:flex;align-items:center;justify-content:center;margin-top:1px}
+.step>div{flex:1;font-size:13.5px;line-height:1.5;min-width:0}
+.step textarea{width:100%;margin-top:8px;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:9px;padding:9px;height:104px;resize:vertical;outline:none;
+  font-family:var(--mono);font-size:12px;line-height:1.4}
+.step textarea:focus{border-color:var(--ink-faint)}
 .frow{display:flex;gap:8px;margin-bottom:9px}
 .fcell{flex:1;background:var(--surface);border-radius:10px;padding:7px 10px}
 .fcell label{display:block;font-size:10px;letter-spacing:.12em;color:var(--ink-faint);margin-bottom:3px}
@@ -221,6 +232,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
+const APP_VERSION = "2026-07-31";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -252,9 +264,9 @@ function blank() {
   const lib = {};
   for (const k in DEFAULT_LIB) lib[k] = { c: DEFAULT_LIB[k][0], p: DEFAULT_LIB[k][1], f: DEFAULT_LIB[k][2], ts: 0 };
   return {
-    v: 2, weight: 70, kc: 3, kp: 1.7, kf: 1, model: "claude-sonnet-5",
+    v: 2, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
-    apiKey: "", sync: { token: "", gistId: "", last: 0 }, _seed: lib
+    sync: { token: "", gistId: "", last: 0 }, _seed: lib
   };
 }
 function migrate(o) {
@@ -277,7 +289,7 @@ function migrate(o) {
     s.v = 2;
   }
   if (!Object.keys(s.lib).length) s.lib = b._seed;
-  delete s._seed;
+  delete s._seed; delete s.apiKey; delete s.model; delete s.mode;
   return s;
 }
 function load() {
@@ -381,27 +393,31 @@ function renderToday() {
     h += `<div class="mealgroup"><div class="mealhead"><span>${m}</span>
       <span class="mk">${nf(sub.c * 4 + sub.p * 4 + sub.f * 9)} kcal</span></div>`;
     for (const x of rs) h += `<div class="row">
-      <div class="name"><b>${esc(x.name)}</b><i>${r0(x.g)} g</i></div>
-      <div class="macros"><s class="c">${r1(x.c)}</s> · <s class="p">${r1(x.p)}</s> · <s class="f">${r1(x.f)}</s></div>
-      <button class="del" data-del="${x.id}">×</button></div>`;
+      <div class="rtap" data-eedit="${x.id}">
+        <div class="name"><b>${esc(x.name)}</b><i>${x.g ? r0(x.g) + " g" : "手动"}</i></div>
+        <div class="macros"><s class="c">${r1(x.c)}</s> · <s class="p">${r1(x.p)}</s> · <s class="f">${r1(x.f)}</s></div>
+      </div><button class="del" data-del="${x.id}">×</button></div>`;
     h += `</div>`;
   }
   scroll.innerHTML = h;
   scroll.querySelector("#prevd").onclick = () => { cursor = shiftDay(cursor, -1); render(); };
   scroll.querySelector("#nextd").onclick = () => { cursor = shiftDay(cursor, 1); render(); };
   scroll.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { removeRec("entries", b.dataset.del); render(); });
+  scroll.querySelectorAll("[data-eedit]").forEach(b => b.onclick = () =>
+    manualSheet(S.entries.find(x => x.id === b.dataset.eedit)));
 }
 
 function renderComposer() {
   composer.innerHTML = `<div class="chips">${MEALS.map(m =>
     `<button class="chip${m === meal ? " on" : ""}" data-meal="${m}">${m}</button>`).join("")}</div>
     <div class="cbar"><textarea id="inp" rows="1" placeholder="吃了什么？例如：150g鸡胸 + 一碗米饭"></textarea>
-    <button id="go">记录</button></div>
-    <div class="hint" id="hint">库内食物直接匹配，未知食物才会问 Claude</div>`;
+    <button id="man" class="alt">手动</button><button id="go">记录</button></div>
+    <div class="hint" id="hint">库内直接命中 · 新食物用 Claude App 查后粘回 · 只有克数点「手动」</div>`;
   composer.querySelectorAll("[data-meal]").forEach(b => b.onclick = () => { meal = b.dataset.meal; renderComposer(); });
   const inp = composer.querySelector("#inp");
   inp.addEventListener("input", () => { inp.style.height = "40px"; inp.style.height = Math.min(inp.scrollHeight, 110) + "px"; });
   composer.querySelector("#go").onclick = submit;
+  composer.querySelector("#man").onclick = () => manualSheet(null);
 }
 
 /* ---------------- 训练 ---------------- */
@@ -573,17 +589,13 @@ function renderSettings() {
     </div>
   </div>
 
-  <div class="card"><h4>Claude 营养查询</h4>
-    <div class="fld"><label>API Key<small>只存本机，不参与同步</small></label>
-      <input id="s_key" class="wide" type="password" placeholder="sk-ant-..." value="${esc(S.apiKey)}"></div>
-    <div class="fld"><label>模型</label>
-      <select id="s_model">
-        <option value="claude-sonnet-5">Sonnet 5 · 准确</option>
-        <option value="claude-haiku-4-5-20251001">Haiku 4.5 · 快而省</option>
-        <option value="claude-opus-5">Opus 5 · 最强</option>
-      </select></div>
+  <div class="card"><h4>营养查询</h4>
+    <div class="readout" style="font-family:var(--sans);font-size:12.5px;line-height:1.6;color:var(--ink-mute)">
+      库里没有的食物，在 Claude App 里查一次再把 JSON 粘回来，走你的订阅，不产生额外费用。
+      建议在 claude.ai 新建一个项目，把下面这段设为项目指令，之后直接输入食物名就会返回 JSON。
+    </div>
     <div class="readout" style="margin-top:9px">本机食物库 <b>${Object.keys(S.lib).length}</b> 条</div>
-    <div class="btnrow"><button id="b_test">测试连接</button><button id="b_lib">管理食物库</button></div>
+    <div class="btnrow"><button id="b_prompt">复制项目指令</button><button id="b_lib">管理食物库</button></div>
   </div>
 
   <div class="card"><h4>数据</h4>
@@ -595,6 +607,15 @@ function renderSettings() {
       <button id="b_json">导出备份</button>
       <button id="b_imp">导入备份</button>
     </div>
+  </div>
+
+  <div class="card"><h4>关于</h4>
+    <div class="readout">版本 <b>${APP_VERSION}</b></div>
+    <div class="btnrow"><button id="b_upd">检查更新</button></div>
+    <div class="readout" style="font-family:var(--sans);font-size:12.5px;line-height:1.6;color:var(--ink-mute);margin-top:10px">
+      记录保存在本机浏览器存储中，清除网站数据会一并删除，建议定期导出备份。
+      营养数值为估算，精确值以食品包装的营养成分表为准。
+    </div>
   </div>`;
 
   const q = id => scroll.querySelector(id);
@@ -603,19 +624,20 @@ function renderSettings() {
   bind("#s_kc", el => S.kc = parseFloat(el.value) || 0);
   bind("#s_kp", el => S.kp = parseFloat(el.value) || 0);
   bind("#s_kf", el => S.kf = parseFloat(el.value) || 0);
-  q("#s_key").onchange = e => { S.apiKey = e.target.value.trim(); save(); toast("已保存到本机"); };
-  const ms = q("#s_model"); ms.value = S.model;
-  ms.onchange = () => { S.model = ms.value; touchSettings(); save(); queueSync(); };
   q("#y_tok").onchange = e => { S.sync.token = e.target.value.trim(); save(); };
   q("#y_gid").onchange = e => { S.sync.gistId = e.target.value.trim(); save(); };
   q("#y_new").onclick = createGist;
   q("#y_now").onclick = () => syncNow(false);
-  q("#b_test").onclick = testKey;
+  q("#b_prompt").onclick = async () => toast(await copyText(SYS) ? "已复制，去 claude.ai 建项目粘进指令栏" : "复制失败");
   q("#b_lib").onclick = showLib;
   q("#b_csv").onclick = exportCSV;
   q("#b_wcsv").onclick = exportWorkoutCSV;
   q("#b_json").onclick = exportJSON;
   q("#b_imp").onclick = importJSON;
+  q("#b_upd").onclick = () => {
+    // 带随机参数重载以绕过缓存；同源，localStorage 不受影响
+    location.replace(location.pathname + "?u=" + Date.now());
+  };
 }
 
 /* ---------------- records / tombstones ---------------- */
@@ -655,7 +677,7 @@ function merge(local, remote) {
   }
   if ((remote.settingsTs || 0) > (local.settingsTs || 0)) {
     out.weight = remote.weight; out.kc = remote.kc; out.kp = remote.kp;
-    out.kf = remote.kf; out.model = remote.model; out.settingsTs = remote.settingsTs;
+    out.kf = remote.kf; out.settingsTs = remote.settingsTs;
   }
   // 清理 120 天前的墓碑，控制体积
   const cut = Date.now() - 120 * 864e5;
@@ -666,7 +688,7 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 2, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf, model: S.model,
+    v: 2, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb
   };
@@ -719,7 +741,6 @@ async function syncNow(silent) {
       remote = JSON.parse(f.content || "{}");
     }
     const merged = merge(S, remote);
-    merged.apiKey = S.apiKey;
     merged.sync = S.sync;
     S = merged;
     const files = {}; files[GIST_FILE] = { content: JSON.stringify(syncPayload()) };
@@ -762,25 +783,12 @@ function closeSheet() { sheet.classList.remove("on"); sheetbody.innerHTML = ""; 
 sheet.onclick = e => { if (e.target === sheet) closeSheet(); };
 
 /* ---------------- 饮食录入 ---------------- */
-async function submit() {
+function submit() {
   const inp = document.getElementById("inp"), text = inp.value.trim();
-  if (!text) return;
+  if (!text) { manualSheet(null); return; }
   const quick = quickParse(text);
   if (quick) { review([quick]); return; }
-  if (!S.apiKey) { toast("先在设置里填 API Key"); view = "set"; render(); return; }
-  const btn = document.getElementById("go");
-  btn.disabled = true; btn.textContent = "…";
-  document.getElementById("hint").textContent = "正在查询营养数据…";
-  try {
-    const items = await askClaude(text);
-    if (!items.length) { toast("没解析出食物，换个说法试试"); return; }
-    review(items);
-  } catch (err) { toast(String(err.message || err).slice(0, 90)); }
-  finally {
-    btn.disabled = false; btn.textContent = "记录";
-    const hint = document.getElementById("hint");
-    if (hint) hint.textContent = "库内食物直接匹配，未知食物才会问 Claude";
-  }
+  pasteSheet(text);
 }
 function quickParse(text) {
   const m = text.match(/^\s*(.+?)\s*(\d+(?:\.\d+)?)\s*(?:g|克|ml|毫升)?\s*$/i)
@@ -808,108 +816,56 @@ const SYS = `你是营养数据助手。用户用中文或英文描述吃了什�
 7. 复合菜肴(如宫保鸡丁)整体给一条，按整道菜每 100g 的平均值估算，confidence 设为 low。
 8. 数值要合理：任何食物每 100g 的碳水+蛋白+脂肪之和不应超过 100。`;
 
-async function askClaude(text) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json", "x-api-key": S.apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
-    body: JSON.stringify({ model: S.model, max_tokens: 1200, system: SYS, messages: [{ role: "user", content: text }] })
-  });
-  if (!res.ok) {
-    let msg = "HTTP " + res.status;
-    try { const j = await res.json(); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
-    throw new Error(msg);
-  }
-  const data = await res.json();
-  const txt = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-  const clean = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
-  const a = clean.indexOf("{"), b = clean.lastIndexOf("}");
-  if (a < 0 || b < 0) throw new Error("返回格式异常");
-  const parsed = JSON.parse(clean.slice(a, b + 1));
-  return (parsed.items || []).map(it => ({
-    name: String(it.name || "未知食物"),
-    grams: Math.max(0, Number(it.grams) || 0),
-    c100: Math.max(0, Number(it.carbs_100g) || 0),
-    p100: Math.max(0, Number(it.protein_100g) || 0),
-    f100: Math.max(0, Number(it.fat_100g) || 0),
-    conf: it.confidence || "medium",
-    note: String(it.note || "")
-  })).filter(x => x.grams > 0);
-}
+/* ---------------- 手动输入克数 / 编辑单条 ---------------- */
+function manualSheet(rec) {
+  const e = rec || { name: "", g: "", c: "", p: "", f: "" };
+  const isEdit = !!rec;
+  openSheet(`<h3>${isEdit ? "编辑记录" : "手动输入"}</h3>
+    <div class="sh-sub">${isEdit ? cursor + " · " + e.meal : cursor + " · " + meal
+      } · 直接填三大营养素的克数，看包装营养表时最快</div>
+    <div class="frow"><div class="fcell text" style="flex:2">
+        <label>名称</label><input id="m_name" value="${esc(e.name)}" placeholder="手动记录"></div>
+      <div class="fcell"><label>分量 G</label><input id="m_g" type="number" inputmode="decimal" value="${e.g || ""}" placeholder="选填"></div></div>
+    <div class="frow">
+      <div class="fcell"><label style="color:var(--carb)">碳水 G</label><input id="m_c" type="number" inputmode="decimal" value="${e.c === "" ? "" : r1(e.c)}" placeholder="0"></div>
+      <div class="fcell"><label style="color:var(--prot)">蛋白 G</label><input id="m_p" type="number" inputmode="decimal" value="${e.p === "" ? "" : r1(e.p)}" placeholder="0"></div>
+      <div class="fcell"><label style="color:var(--fat)">脂肪 G</label><input id="m_f" type="number" inputmode="decimal" value="${e.f === "" ? "" : r1(e.f)}" placeholder="0"></div>
+    </div>
+    <div class="readout" id="m_kcal" style="text-align:center;margin:2px 0 4px"></div>
+    <div class="sheetact">
+      ${isEdit ? `<button class="danger" id="m_del">删除</button>` : ""}
+      <button class="ghost" id="m_cancel">取消</button>
+      <button class="go" id="m_save">保存</button></div>`);
 
-function review(items) {
-  pending = items;
-  openSheet(`<h3>确认后记入${meal}</h3>
-    <div class="sh-sub">克数可以直接改，营养素会跟着换算</div>
-    <div id="items"></div>
-    <div class="sheetact"><button class="ghost" id="sh_cancel">取消</button>
-    <button class="go" id="sh_save">全部记录</button></div>`);
-  drawItems();
-  document.getElementById("sh_cancel").onclick = closeSheet;
-  document.getElementById("sh_save").onclick = commit;
-}
-function drawItems() {
-  const box = document.getElementById("items");
-  if (!box) return;
-  box.innerHTML = pending.map((it, i) => {
-    const k = it.grams / 100;
-    const lab = it.conf === "库" ? "库" : ({ high: "高", medium: "中", low: "估" }[it.conf] || "中");
-    return `<div class="item">
-      <div class="it1"><input class="nm" data-i="${i}" value="${esc(it.name)}">
-        <span class="conf ${it.conf === "low" ? "low" : ""}">${lab}</span>
-        <span class="gwrap"><input class="gm" data-g="${i}" type="number" inputmode="decimal" value="${r0(it.grams)}"><em>g</em></span>
-        <button class="drop" data-x="${i}">×</button></div>
-      <div class="it2">
-        <span style="color:var(--carb)">碳 ${r1(it.c100 * k)}</span>
-        <span style="color:var(--prot)">蛋 ${r1(it.p100 * k)}</span>
-        <span style="color:var(--fat)">脂 ${r1(it.f100 * k)}</span>
-        <span>${r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k)} kcal</span></div>
-      ${it.note ? `<div class="it2" style="margin-top:5px;color:var(--ink-faint);font-family:var(--sans)">${esc(it.note)}</div>` : ""}
-    </div>`;
-  }).join("");
-  box.querySelectorAll("[data-g]").forEach(el => el.oninput = () => {
-    const i = +el.dataset.g, it = pending[i];
-    it.grams = Math.max(0, parseFloat(el.value) || 0);
-    const k = it.grams / 100, line = el.closest(".item").querySelectorAll(".it2")[0].children;
-    line[0].textContent = "碳 " + r1(it.c100 * k);
-    line[1].textContent = "蛋 " + r1(it.p100 * k);
-    line[2].textContent = "脂 " + r1(it.f100 * k);
-    line[3].textContent = r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k) + " kcal";
-  });
-  box.querySelectorAll("[data-i]").forEach(el => el.oninput = () => pending[+el.dataset.i].name = el.value);
-  box.querySelectorAll("[data-x]").forEach(el => el.onclick = () => {
-    pending.splice(+el.dataset.x, 1);
-    if (!pending.length) { closeSheet(); return; }
-    drawItems();
-  });
-}
-function commit() {
-  const now = Date.now();
-  for (const it of pending) {
-    if (it.grams <= 0) continue;
-    const k = it.grams / 100;
-    S.entries.push({
-      id: newId(), date: cursor, meal, name: it.name, g: it.grams,
-      c: it.c100 * k, p: it.p100 * k, f: it.f100 * k, ts: now
-    });
-    S.lib[it.name] = { c: it.c100, p: it.p100, f: it.f100, ts: now };
-  }
-  touchSettings(); save(); closeSheet();
-  const inp = document.getElementById("inp");
-  if (inp) { inp.value = ""; inp.style.height = "40px"; }
-  render(); queueSync();
-}
-
-async function testKey() {
-  if (!S.apiKey) { toast("先填 API Key"); return; }
-  toast("测试中…");
-  try {
-    const items = await askClaude("一个中等大小的水煮鸡蛋");
-    toast(items.length ? "连接正常 · " + items[0].name : "连上了，但没解析出结果");
-  } catch (e) { toast("失败：" + String(e.message).slice(0, 70)); }
+  const g = id => document.getElementById(id);
+  const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
+  const refresh = () => {
+    const k = num("m_c") * 4 + num("m_p") * 4 + num("m_f") * 9;
+    g("m_kcal").innerHTML = `合计 <b>${r0(k)}</b> kcal`;
+  };
+  ["m_c", "m_p", "m_f"].forEach(id => g(id).oninput = refresh);
+  // 若名称在食物库里，改分量会自动按每 100g 换算
+  g("m_g").oninput = () => {
+    const hit = S.lib[g("m_name").value.trim()];
+    if (!hit) return;
+    const k = num("m_g") / 100;
+    g("m_c").value = r1(hit.c * k); g("m_p").value = r1(hit.p * k); g("m_f").value = r1(hit.f * k);
+    refresh();
+  };
+  refresh();
+  g("m_cancel").onclick = closeSheet;
+  if (isEdit) g("m_del").onclick = () => { removeRec("entries", rec.id); closeSheet(); render(); };
+  g("m_save").onclick = () => {
+    const c = num("m_c"), p = num("m_p"), f = num("m_f");
+    if (!c && !p && !f) { toast("三个克数至少填一个"); return; }
+    const body = { name: g("m_name").value.trim() || "手动记录", g: num("m_g"), c, p, f, ts: Date.now() };
+    if (isEdit) Object.assign(rec, body);
+    else S.entries.push(Object.assign({ id: newId(), date: cursor, meal }, body));
+    save(); closeSheet();
+    const inp = document.getElementById("inp");
+    if (inp) { inp.value = ""; inp.style.height = "40px"; }
+    render(); queueSync();
+  };
 }
 
 /* ---------------- 导入导出 ---------------- */
@@ -951,9 +907,8 @@ function importJSON() {
         const j = JSON.parse(rd.result);
         if (!j || !Array.isArray(j.entries)) throw new Error("bad");
         const inc = migrate(j);
-        const keepKey = S.apiKey, keepSync = S.sync;
-        S = merge(S, inc);
-        S.apiKey = keepKey || inc.apiKey || ""; S.sync = keepSync;
+        const keepSync = S.sync;
+        S = merge(S, inc); S.sync = keepSync;
         save(); render(); queueSync();
         toast("已合并 · 饮食 " + S.entries.length + " · 训练 " + S.workouts.length);
       } catch (e) { toast("文件格式不对，导入取消"); }
