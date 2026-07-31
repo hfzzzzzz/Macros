@@ -219,7 +219,7 @@ let trendEx // 进展曲线当前选中的动作名
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
-- 移动端安全区：新增贴边容器记得带 `env(safe-area-inset-*)`。
+- 移动端安全区：新增贴边容器记得带 `env(safe-area-inset-*)`。但**清空内容 ≠ 元素消失** —— `#composer` 在非「今日」页只被 `innerHTML = ""`，它的边框和安全区内边距会在 tabbar 上方留一条约 50px 的空白（iPhone 上尤其明显）。靠 `#composer:empty{display:none}` 收掉，别删了那条规则。
 - **复用别处的 class 时先看选择器有没有被限定父级。** 比如 `.ex1` 的排版规则写成 `.exrow .ex1 b{…}`，在新的 `.prow` 里复用 `.ex1` 就完全不生效（表现是名字和明细挤成一行、`<i>` 变斜体）。新增容器时把它加进选择器列表，别复制一份样式。
 - 提交信息沿用中文短句风格（`每日营养摄入追踪表v3`）。
 

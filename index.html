@@ -145,6 +145,9 @@ button{background:none;border:none;padding:0;cursor:pointer}
 
 #composer{flex:none;background:var(--surface);border-top:1px solid var(--line);
   padding:9px 12px calc(env(safe-area-inset-bottom) + 9px)}
+/* 非「今日」页时 render() 只清空内容，元素还在；不收掉的话
+   边框 + 安全区内边距会在 tabbar 上方留一条空白 */
+#composer:empty{display:none}
 .chips{display:flex;gap:6px;margin-bottom:8px;overflow-x:auto;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
 .chip{flex:none;padding:4px 11px;border-radius:20px;background:var(--surface-2);font-size:12px;
@@ -268,7 +271,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-07-31.3";
+const APP_VERSION = "2026-07-31.4";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -951,8 +954,8 @@ function renderSettings() {
     <div class="fld"><label>碳水 g/kg</label><input id="s_kc" type="number" inputmode="decimal" step="0.1" value="${S.kc}"></div>
     <div class="fld"><label>蛋白 g/kg</label><input id="s_kp" type="number" inputmode="decimal" step="0.1" value="${S.kp}"></div>
     <div class="fld"><label>脂肪 g/kg</label><input id="s_kf" type="number" inputmode="decimal" step="0.1" value="${S.kf}"></div>
-    <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g
-      · <b>${nf(t.kcal)}</b> kcal (<b>${r1(t.kcal / t.w)}</b> kcal/kg)</div>
+    <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g<br>
+      <b>${nf(t.kcal)}</b> kcal · <b>${r1(t.kcal / t.w)}</b> kcal/kg</div>
   </div>
 
   <div class="card"><h4>多端同步</h4>
