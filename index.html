@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Macros">
+<meta name="theme-color" content="#14161C">
+<title>Macros</title>
+<style>
+:root{
+  --ground:#14161C; --surface:#1C202A; --surface-2:#242936; --line:#2E3444;
+  --ink:#EDEEF2; --ink-mute:#878EA0; --ink-faint:#565E72;
+  --carb:#F2A65A; --prot:#6FD3C7; --fat:#B98CE8; --lift:#8FA6FF; --over:#FF6B6B; --ok:#5FD48A;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;height:100%}
+body{background:#0E1015;color:var(--ink);font-family:var(--sans);font-size:15px;
+  line-height:1.45;overscroll-behavior-y:none}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+button{background:none;border:none;padding:0;cursor:pointer}
+
+#app{display:flex;flex-direction:column;height:100dvh;max-width:620px;margin:0 auto;
+  background:var(--ground)}
+@media(min-width:660px){#app{border-left:1px solid var(--line);border-right:1px solid var(--line)}}
+#scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:calc(env(safe-area-inset-top) + 8px) 16px 12px}
+#tabbar{display:flex;border-top:1px solid var(--line);background:var(--surface);
+  padding-bottom:env(safe-area-inset-bottom);flex:none}
+#tabbar button{flex:1;padding:11px 0 9px;font-size:11px;letter-spacing:.06em;color:var(--ink-faint);
+  display:flex;flex-direction:column;align-items:center;gap:3px}
+#tabbar button .g{font-family:var(--mono);font-size:15px;line-height:1}
+#tabbar button.on{color:var(--ink)}
+
+.datebar{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.datebar .d{font-family:var(--mono);font-size:13px;letter-spacing:.06em;color:var(--ink-mute)}
+.datebar button.nav{width:38px;height:32px;font-family:var(--mono);font-size:16px;color:var(--ink-mute)}
+.datebar button.nav:active{color:var(--ink)}
+
+.hero{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
+.gauge{position:relative;background:var(--surface);border-radius:12px;padding:12px 10px 11px;overflow:hidden}
+.gauge .fillwrap{position:absolute;inset:0;opacity:.13}
+.gauge .fill{position:absolute;left:0;bottom:0;width:100%;transition:height .35s ease}
+.gauge .lbl{position:relative;font-size:11px;letter-spacing:.14em;color:var(--ink-mute);margin-bottom:5px}
+.gauge .num{position:relative;font-family:var(--mono);font-size:27px;font-weight:600;
+  letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1}
+.gauge .sub{position:relative;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);
+  margin-top:4px;font-variant-numeric:tabular-nums}
+.gauge.c{color:var(--carb)} .gauge.p{color:var(--prot)} .gauge.f{color:var(--fat)}
+.gauge.busted .num{color:var(--over)}
+.hero-cap{text-align:center;font-size:10.5px;letter-spacing:.16em;color:var(--ink-faint);
+  margin:0 0 14px;text-transform:uppercase}
+.kcal{display:flex;justify-content:space-between;align-items:baseline;padding:10px 14px;
+  background:var(--surface);border-radius:12px;margin-bottom:16px}
+.kcal .k1{font-size:11px;letter-spacing:.14em;color:var(--ink-mute)}
+.kcal .k2{font-family:var(--mono);font-size:16px;font-variant-numeric:tabular-nums}
+.kcal .k2 span{color:var(--ink-faint);font-size:12px}
+
+.mealgroup{margin-bottom:16px}
+.mealhead{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;
+  letter-spacing:.16em;color:var(--ink-faint);margin-bottom:6px;padding-bottom:5px;
+  border-bottom:1px solid var(--line)}
+.mealhead .mk{font-family:var(--mono);letter-spacing:0}
+.row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(46,52,68,.5)}
+.row:last-child{border-bottom:none}
+.row .name{flex:1;min-width:0}
+.row .name b{display:block;font-weight:500;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .name i{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+.row .macros{font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;
+  text-align:right;white-space:nowrap}
+.row .macros s{text-decoration:none}
+.row .macros s.c{color:var(--carb)} .row .macros s.p{color:var(--prot)} .row .macros s.f{color:var(--fat)}
+.row .del{width:26px;text-align:center;color:var(--ink-faint);font-size:17px;flex:none}
+.empty{color:var(--ink-faint);font-size:13px;padding:16px 0;text-align:center}
+
+/* ---- 训练周表 ---- */
+.weekstrip{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:12px}
+.wcell{background:var(--surface);border-radius:9px;padding:8px 2px 7px;text-align:center;
+  border:1px solid transparent}
+.wcell.today{border-color:var(--ink-faint)}
+.wcell .wd{font-size:10px;color:var(--ink-faint);letter-spacing:.04em}
+.wcell .wn{font-family:var(--mono);font-size:15px;font-weight:600;margin-top:3px;
+  font-variant-numeric:tabular-nums;color:var(--ink-faint)}
+.wcell.has .wn{color:var(--lift)}
+.wsum{display:flex;justify-content:space-around;background:var(--surface);border-radius:12px;
+  padding:11px 8px;margin-bottom:18px;text-align:center}
+.wsum div span{display:block;font-family:var(--mono);font-size:17px;font-weight:600;
+  font-variant-numeric:tabular-nums}
+.wsum div small{display:block;font-size:10px;letter-spacing:.12em;color:var(--ink-faint);margin-top:3px}
+.dayblock{margin-bottom:14px}
+.dayhead{display:flex;justify-content:space-between;align-items:center;padding-bottom:5px;
+  border-bottom:1px solid var(--line);margin-bottom:2px}
+.dayhead .dh1{font-size:12px;letter-spacing:.1em;color:var(--ink-mute)}
+.dayhead .dh1 em{font-style:normal;font-family:var(--mono);color:var(--ink-faint);margin-left:7px}
+.dayhead .dh1.istoday{color:var(--ink);font-weight:600}
+.dayhead .add{font-size:12px;color:var(--lift);padding:3px 9px;border-radius:7px;background:var(--surface-2)}
+.exrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(46,52,68,.45)}
+.exrow:last-child{border-bottom:none}
+.exrow .ex1{flex:1;min-width:0}
+.exrow .ex1 b{display:block;font-weight:500;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exrow .ex1 i{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
+.exrow .vol{font-family:var(--mono);font-size:11.5px;color:var(--lift);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.dayempty{color:var(--ink-faint);font-size:12px;padding:9px 0}
+
+#composer{flex:none;background:var(--surface);border-top:1px solid var(--line);
+  padding:9px 12px calc(env(safe-area-inset-bottom) + 9px)}
+.chips{display:flex;gap:6px;margin-bottom:8px;overflow-x:auto;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;padding:4px 11px;border-radius:20px;background:var(--surface-2);font-size:12px;
+  color:var(--ink-mute);border:1px solid transparent;white-space:nowrap}
+.chip.on{background:var(--ink);color:var(--ground);font-weight:600}
+.cbar{display:flex;gap:8px;align-items:flex-end}
+.cbar textarea{flex:1;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;
+  padding:9px 11px;resize:none;height:40px;max-height:110px;line-height:1.35;outline:none}
+.cbar textarea:focus{border-color:var(--ink-faint)}
+.cbar button{flex:none;height:40px;padding:0 15px;border-radius:11px;background:var(--ink);
+  color:var(--ground);font-weight:600;font-size:14px}
+.cbar button:disabled{opacity:.4}
+.hint{font-size:11px;color:var(--ink-faint);margin-top:6px;font-family:var(--mono)}
+
+#sheet{position:fixed;inset:0;background:rgba(10,11,15,.72);-webkit-backdrop-filter:blur(6px);
+  backdrop-filter:blur(6px);display:none;align-items:flex-end;justify-content:center;z-index:50}
+#sheet.on{display:flex}
+.sheetbody{width:100%;max-width:620px;max-height:88dvh;overflow-y:auto;background:var(--ground);
+  border-top-left-radius:18px;border-top-right-radius:18px;border-top:1px solid var(--line);
+  padding:16px 16px calc(env(safe-area-inset-bottom) + 16px)}
+.sheetbody h3{margin:0 0 3px;font-size:16px;font-weight:600}
+.sheetbody .sh-sub{color:var(--ink-faint);font-size:12px;margin-bottom:14px}
+.item{background:var(--surface);border-radius:12px;padding:11px 12px;margin-bottom:9px}
+.item .it1{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.item .it1 input.nm{flex:1;background:none;border:none;font-weight:500;outline:none;min-width:0}
+.item .it1 .gwrap{display:flex;align-items:center;gap:4px;background:var(--surface-2);border-radius:8px;padding:4px 8px}
+.item .it1 input.gm{width:52px;background:none;border:none;text-align:right;outline:none;
+  font-family:var(--mono);font-variant-numeric:tabular-nums}
+.item .it1 .gwrap em{font-style:normal;font-size:11px;color:var(--ink-faint)}
+.item .it2{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;
+  font-variant-numeric:tabular-nums;color:var(--ink-mute)}
+.item .drop{color:var(--ink-faint);font-size:17px;padding:0 2px}
+.conf{font-size:10px;letter-spacing:.1em;padding:1px 6px;border-radius:4px;background:var(--surface-2);color:var(--ink-faint)}
+.conf.low{color:var(--carb)}
+.sheetact{display:flex;gap:9px;margin-top:14px}
+.sheetact button{flex:1;height:44px;border-radius:12px;font-weight:600}
+.sheetact .ghost{background:var(--surface-2);color:var(--ink-mute)}
+.sheetact .go{background:var(--ink);color:var(--ground)}
+.sheetact .danger{background:var(--surface-2);color:var(--over);flex:0 0 88px}
+
+.frow{display:flex;gap:8px;margin-bottom:9px}
+.fcell{flex:1;background:var(--surface);border-radius:10px;padding:7px 10px}
+.fcell label{display:block;font-size:10px;letter-spacing:.12em;color:var(--ink-faint);margin-bottom:3px}
+.fcell input{width:100%;background:none;border:none;outline:none;font-family:var(--mono);
+  font-variant-numeric:tabular-nums;font-size:15px}
+.fcell.text input{font-family:var(--sans)}
+
+.card{background:var(--surface);border-radius:13px;padding:13px 14px;margin-bottom:12px}
+.card h4{margin:0 0 11px;font-size:11px;letter-spacing:.16em;color:var(--ink-faint);font-weight:600}
+.fld{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;
+  border-bottom:1px solid rgba(46,52,68,.55)}
+.fld:last-child{border-bottom:none}
+.fld label{font-size:14px;flex:1}
+.fld label small{display:block;color:var(--ink-faint);font-size:11px;margin-top:1px;line-height:1.4}
+.fld input,.fld select{background:var(--surface-2);border:1px solid var(--line);border-radius:8px;
+  padding:6px 9px;width:112px;text-align:right;outline:none;font-family:var(--mono);
+  font-variant-numeric:tabular-nums;flex:none}
+.fld input.wide{width:176px;text-align:left;font-size:12px}
+.fld select{width:176px;text-align:left;font-family:var(--sans)}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btnrow button{flex:1;min-width:84px;padding:9px 0;border-radius:9px;background:var(--surface-2);
+  font-size:13px;color:var(--ink-mute)}
+.btnrow button.pri{background:var(--ink);color:var(--ground);font-weight:600}
+.readout{font-family:var(--mono);font-size:12.5px;color:var(--ink-mute);
+  font-variant-numeric:tabular-nums;line-height:1.7}
+.readout b{color:var(--ink);font-weight:600}
+.readout b.ok{color:var(--ok)} .readout b.bad{color:var(--over)}
+
+.trendrow{display:flex;align-items:center;gap:9px;padding:6px 0}
+.trendrow .td{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);width:42px;flex:none}
+.trendrow .bars{flex:1;display:flex;flex-direction:column;gap:2.5px}
+.tbar{height:5px;background:var(--surface-2);border-radius:3px;overflow:hidden}
+.tbar>i{display:block;height:100%;border-radius:3px}
+.trendrow .tk{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);width:52px;
+  text-align:right;flex:none;font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--ink-faint);margin-bottom:10px;flex-wrap:wrap}
+.legend s{text-decoration:none;display:inline-block;width:9px;height:9px;border-radius:2px;
+  margin-right:5px;vertical-align:-1px}
+
+#syncdot{position:absolute;top:6px;right:8px;width:6px;height:6px;border-radius:50%;background:var(--ink-faint)}
+#syncdot.busy{background:var(--carb)} #syncdot.ok{background:var(--ok)} #syncdot.err{background:var(--over)}
+#tabbar button[data-tab=set]{position:relative}
+
+.toast{position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(env(safe-area-inset-bottom) + 96px);background:var(--surface-2);
+  border:1px solid var(--line);color:var(--ink);padding:9px 16px;border-radius:20px;font-size:13px;
+  z-index:80;opacity:0;transition:opacity .22s;pointer-events:none;max-width:88vw;text-align:center}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="scroll"></div>
+  <div id="composer"></div>
+  <nav id="tabbar">
+    <button data-tab="today" class="on"><span class="g">▦</span>今日</button>
+    <button data-tab="train"><span class="g">▥</span>训练</button>
+    <button data-tab="trend"><span class="g">▤</span>趋势</button>
+    <button data-tab="set"><span class="g">⚙</span>设置<span id="syncdot"></span></button>
+  </nav>
+</div>
+<div id="sheet"><div class="sheetbody" id="sheetbody"></div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* =====================================================================
+   Macros v2 — 营养 + 训练 · 本地优先 · Gist 多端同步
+   · 记录全部存在本机 localStorage
+   · 开启同步后，同一份数据镜像到你自己的一个 secret Gist，手机/电脑合并
+   · API key 与 GitHub token 只留在本机，永不写入 Gist
+   ===================================================================== */
+
+const KEY = "macros_v1";
+const KCAL = { c: 4, p: 4, f: 9 };
+const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
+const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+const GIST_FILE = "macros.json";
+
+const DEFAULT_LIB = {
+  "白米饭": [25.9, 2.6, 0.3], "馒头": [47.0, 7.0, 1.1], "全麦面包": [43.3, 13.4, 4.2],
+  "燕麦片": [66.3, 13.5, 6.9], "意面(干)": [74.7, 13.0, 1.5], "土豆": [17.2, 2.0, 0.1],
+  "红薯": [20.1, 1.6, 0.1], "香蕉": [22.8, 1.1, 0.3], "苹果": [13.8, 0.3, 0.2],
+  "鸡胸肉": [0, 23.1, 1.9], "鸡腿肉": [0, 20.0, 7.5], "牛肉(瘦)": [0, 22.6, 5.0],
+  "猪里脊": [0.5, 20.2, 7.9], "三文鱼": [0, 20.4, 13.4], "虾仁": [0.9, 20.9, 1.4],
+  "鸡蛋": [1.1, 12.6, 9.5], "牛奶(全脂)": [4.8, 3.3, 3.6], "希腊酸奶(0脂)": [3.6, 10.0, 0.4],
+  "乳清蛋白粉": [8.0, 76.0, 6.0], "北豆腐": [3.4, 12.2, 4.8], "花生酱": [20.0, 25.0, 50.0],
+  "杏仁": [21.6, 21.2, 49.9], "橄榄油": [0, 0, 100.0], "切达奶酪": [3.1, 24.9, 33.1],
+  "西兰花": [6.6, 2.8, 0.4], "菠菜": [3.6, 2.9, 0.4]
+};
+
+let S = load();
+let view = "today";
+let cursor = todayKey();
+let wkCursor = weekStart(todayKey());
+let meal = guessMeal();
+let pending = null;
+let syncing = false, syncTimer = null;
+
+/* ---------------- state ---------------- */
+function blank() {
+  const lib = {};
+  for (const k in DEFAULT_LIB) lib[k] = { c: DEFAULT_LIB[k][0], p: DEFAULT_LIB[k][1], f: DEFAULT_LIB[k][2], ts: 0 };
+  return {
+    v: 2, weight: 70, kc: 3, kp: 1.7, kf: 1, model: "claude-sonnet-5",
+    settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
+    apiKey: "", sync: { token: "", gistId: "", last: 0 }, _seed: lib
+  };
+}
+function migrate(o) {
+  const b = blank();
+  const s = Object.assign({}, b, o);
+  s.sync = Object.assign({ token: "", gistId: "", last: 0 }, o.sync || {});
+  if (!o.v || o.v < 2) {
+    s.entries = (o.entries || []).map(e => Object.assign({ ts: 0 }, e));
+    const w = {};
+    for (const d in (o.weights || {})) {
+      const v = o.weights[d];
+      w[d] = (v && typeof v === "object") ? v : { v: Number(v), ts: 0 };
+    }
+    s.weights = w;
+    const lib = {};
+    for (const n in (o.lib || {})) lib[n] = Object.assign({ ts: 0 }, o.lib[n]);
+    s.lib = lib;
+    s.workouts = o.workouts || [];
+    s.tomb = o.tomb || {};
+    s.v = 2;
+  }
+  if (!Object.keys(s.lib).length) s.lib = b._seed;
+  delete s._seed;
+  return s;
+}
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) { const b = blank(); b.lib = b._seed; delete b._seed; return b; }
+    return migrate(JSON.parse(raw));
+  } catch (e) { const b = blank(); b.lib = b._seed; delete b._seed; return b; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); }
+  catch (e) { toast("保存失败：本机存储已满，请导出备份后清理"); }
+}
+function touchSettings() { S.settingsTs = Date.now(); }
+
+/* ---------------- date helpers ---------------- */
+function pad(n) { return String(n).padStart(2, "0"); }
+function todayKey(d) { const x = d || new Date(); return x.getFullYear() + "-" + pad(x.getMonth() + 1) + "-" + pad(x.getDate()); }
+function shiftDay(key, n) { const [y, m, d] = key.split("-").map(Number); return todayKey(new Date(y, m - 1, d + n)); }
+function weekStart(key) {
+  const [y, m, d] = key.split("-").map(Number);
+  const x = new Date(y, m - 1, d);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return todayKey(x);
+}
+function guessMeal() {
+  const n = new Date(), h = n.getHours() + n.getMinutes() / 60;
+  return h < 10.5 ? "早餐" : h < 15 ? "午餐" : h < 21 ? "晚餐" : "加餐";
+}
+const r1 = n => Math.round(n * 10) / 10;
+const r0 = n => Math.round(n);
+const nf = n => r0(n).toLocaleString("en-US");
+function esc(s) { return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
+let toastT;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg; el.classList.add("on");
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove("on"), 2800);
+}
+
+/* ---------------- computed ---------------- */
+function weightOn(date) {
+  const ks = Object.keys(S.weights).filter(k => k <= date).sort();
+  return ks.length ? S.weights[ks[ks.length - 1]].v : S.weight;
+}
+function targets(date) {
+  const w = weightOn(date), c = w * S.kc, p = w * S.kp, f = w * S.kf;
+  return { c, p, f, kcal: c * KCAL.c + p * KCAL.p + f * KCAL.f, w };
+}
+function eatenOn(date) {
+  const t = { c: 0, p: 0, f: 0 };
+  for (const e of S.entries) if (e.date === date) { t.c += e.c; t.p += e.p; t.f += e.f; }
+  t.kcal = t.c * KCAL.c + t.p * KCAL.p + t.f * KCAL.f;
+  return t;
+}
+function exOn(date) { return S.workouts.filter(w => w.date === date); }
+function volOf(w) { return (w.sets || 0) * (w.reps || 0) * (w.wt || 0); }
+
+/* ---------------- render ---------------- */
+const scroll = document.getElementById("scroll");
+const composer = document.getElementById("composer");
+
+function render() {
+  if (view === "today") { renderToday(); renderComposer(); }
+  else { composer.innerHTML = ""; (view === "train" ? renderTrain : view === "trend" ? renderTrend : renderSettings)(); }
+  document.querySelectorAll("#tabbar button").forEach(b => b.classList.toggle("on", b.dataset.tab === view));
+}
+
+function gauge(cls, label, left, target, eaten) {
+  const h = target > 0 ? Math.min(eaten / target, 1) * 100 : 0;
+  return `<div class="gauge ${cls}${left < 0 ? " busted" : ""}">
+    <div class="fillwrap"><div class="fill" style="height:${h}%;background:currentColor"></div></div>
+    <div class="lbl">${label}</div>
+    <div class="num">${left >= 0 ? r0(left) : "+" + r0(-left)}</div>
+    <div class="sub">${r0(eaten)} / ${r0(target)} g</div></div>`;
+}
+
+function renderToday() {
+  const t = targets(cursor), e = eatenOn(cursor), isT = cursor === todayKey();
+  const ex = exOn(cursor);
+  let h = `<div class="datebar"><button class="nav" id="prevd">‹</button>
+    <div class="d">${cursor}${isT ? " · 今天" : ""} · ${r1(t.w)}kg</div>
+    <button class="nav" id="nextd">›</button></div>
+  <div class="hero">${gauge("c", "碳水", t.c - e.c, t.c, e.c)}${gauge("p", "蛋白", t.p - e.p, t.p, e.p)}${gauge("f", "脂肪", t.f - e.f, t.f, e.f)}</div>
+  <p class="hero-cap">还可摄入 (g)</p>
+  <div class="kcal"><div class="k1">热量</div>
+    <div class="k2">${nf(e.kcal)} <span>/ ${nf(t.kcal)} kcal · 余 ${nf(t.kcal - e.kcal)}</span></div></div>`;
+
+  if (ex.length) {
+    const vol = ex.reduce((a, w) => a + volOf(w), 0);
+    h += `<div class="kcal" style="margin-top:-8px"><div class="k1" style="color:var(--lift)">训练</div>
+      <div class="k2">${ex.length} 个动作 <span>${ex.reduce((a, w) => a + (w.sets || 0), 0)} 组${vol ? " · 容量 " + nf(vol) + " kg" : ""}</span></div></div>`;
+  }
+
+  const rows = S.entries.filter(x => x.date === cursor);
+  if (!rows.length) h += `<div class="empty">今天还没有饮食记录。<br>在下面输入吃了什么，例如「两个鸡蛋和一碗米饭」。</div>`;
+  for (const m of MEALS) {
+    const rs = rows.filter(x => x.meal === m);
+    if (!rs.length) continue;
+    const sub = rs.reduce((a, x) => (a.c += x.c, a.p += x.p, a.f += x.f, a), { c: 0, p: 0, f: 0 });
+    h += `<div class="mealgroup"><div class="mealhead"><span>${m}</span>
+      <span class="mk">${nf(sub.c * 4 + sub.p * 4 + sub.f * 9)} kcal</span></div>`;
+    for (const x of rs) h += `<div class="row">
+      <div class="name"><b>${esc(x.name)}</b><i>${r0(x.g)} g</i></div>
+      <div class="macros"><s class="c">${r1(x.c)}</s> · <s class="p">${r1(x.p)}</s> · <s class="f">${r1(x.f)}</s></div>
+      <button class="del" data-del="${x.id}">×</button></div>`;
+    h += `</div>`;
+  }
+  scroll.innerHTML = h;
+  scroll.querySelector("#prevd").onclick = () => { cursor = shiftDay(cursor, -1); render(); };
+  scroll.querySelector("#nextd").onclick = () => { cursor = shiftDay(cursor, 1); render(); };
+  scroll.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { removeRec("entries", b.dataset.del); render(); });
+}
+
+function renderComposer() {
+  composer.innerHTML = `<div class="chips">${MEALS.map(m =>
+    `<button class="chip${m === meal ? " on" : ""}" data-meal="${m}">${m}</button>`).join("")}</div>
+    <div class="cbar"><textarea id="inp" rows="1" placeholder="吃了什么？例如：150g鸡胸 + 一碗米饭"></textarea>
+    <button id="go">记录</button></div>
+    <div class="hint" id="hint">库内食物直接匹配，未知食物才会问 Claude</div>`;
+  composer.querySelectorAll("[data-meal]").forEach(b => b.onclick = () => { meal = b.dataset.meal; renderComposer(); });
+  const inp = composer.querySelector("#inp");
+  inp.addEventListener("input", () => { inp.style.height = "40px"; inp.style.height = Math.min(inp.scrollHeight, 110) + "px"; });
+  composer.querySelector("#go").onclick = submit;
+}
+
+/* ---------------- 训练 ---------------- */
+function renderTrain() {
+  const days = []; for (let i = 0; i < 7; i++) days.push(shiftDay(wkCursor, i));
+  const tk = todayKey();
+  let nDays = 0, nSets = 0, nVol = 0;
+  for (const d of days) {
+    const ex = exOn(d);
+    if (ex.length) nDays++;
+    for (const w of ex) { nSets += w.sets || 0; nVol += volOf(w); }
+  }
+  let h = `<div class="datebar"><button class="nav" id="prevw">‹</button>
+    <div class="d">${wkCursor.slice(5)} — ${days[6].slice(5)}</div>
+    <button class="nav" id="nextw">›</button></div>
+  <div class="weekstrip">${days.map((d, i) => {
+    const n = exOn(d).length;
+    return `<div class="wcell${n ? " has" : ""}${d === tk ? " today" : ""}">
+      <div class="wd">${DOW[i]}</div><div class="wn">${n || "–"}</div></div>`;
+  }).join("")}</div>
+  <div class="wsum">
+    <div><span>${nDays}<small style="display:inline;font-size:11px;color:var(--ink-faint)">/7</small></span><small>训练日</small></div>
+    <div><span>${nSets}</span><small>总组数</small></div>
+    <div><span>${nVol ? nf(nVol) : "–"}</span><small>容量 KG</small></div>
+  </div>`;
+
+  days.forEach((d, i) => {
+    const ex = exOn(d);
+    h += `<div class="dayblock"><div class="dayhead">
+      <div class="dh1${d === tk ? " istoday" : ""}">${DOW[i]}<em>${d.slice(5)}</em></div>
+      <button class="add" data-add="${d}">+ 添加动作</button></div>`;
+    if (!ex.length) h += `<div class="dayempty">—</div>`;
+    else for (const w of ex) {
+      const v = volOf(w);
+      h += `<div class="exrow" data-edit="${w.id}">
+        <div class="ex1"><b>${esc(w.name)}</b><i>${descOf(w)}</i></div>
+        <div class="vol">${v ? nf(v) + " kg" : ""}</div></div>`;
+    }
+    h += `</div>`;
+  });
+  scroll.innerHTML = h;
+  scroll.querySelector("#prevw").onclick = () => { wkCursor = shiftDay(wkCursor, -7); render(); };
+  scroll.querySelector("#nextw").onclick = () => { wkCursor = shiftDay(wkCursor, 7); render(); };
+  scroll.querySelectorAll("[data-add]").forEach(b => b.onclick = () => exSheet(null, b.dataset.add));
+  scroll.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
+    exSheet(S.workouts.find(w => w.id === b.dataset.edit), null);
+  });
+}
+function descOf(w) {
+  const bits = [];
+  if (w.sets && w.reps) bits.push(w.sets + "×" + w.reps);
+  else if (w.sets) bits.push(w.sets + " 组");
+  if (w.wt) bits.push("@" + r1(w.wt) + "kg");
+  if (w.dur) bits.push(r1(w.dur) + " min");
+  if (w.note) bits.push(w.note);
+  return esc(bits.join("  ")) || "—";
+}
+function exNames() {
+  const seen = {}, out = [];
+  for (let i = S.workouts.length - 1; i >= 0 && out.length < 14; i--) {
+    const n = S.workouts[i].name;
+    if (!seen[n]) { seen[n] = 1; out.push(n); }
+  }
+  return out;
+}
+function exSheet(rec, date) {
+  const w = rec || { name: "", sets: "", reps: "", wt: "", dur: "", note: "", date: date };
+  const recents = exNames();
+  let h = `<h3>${rec ? "编辑动作" : "添加动作"}</h3>
+    <div class="sh-sub">${w.date} · 只填用得上的字段，其余留空</div>`;
+  if (!rec && recents.length) h += `<div class="chips" style="margin-bottom:10px">${
+    recents.map(n => `<button class="chip" data-rn="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
+  h += `<div class="frow"><div class="fcell text" style="flex:1">
+      <label>动作名称</label><input id="e_name" value="${esc(w.name)}" placeholder="深蹲 / 跑步"></div></div>
+    <div class="frow">
+      <div class="fcell"><label>组数</label><input id="e_sets" type="number" inputmode="numeric" value="${w.sets || ""}" placeholder="–"></div>
+      <div class="fcell"><label>次数</label><input id="e_reps" type="number" inputmode="numeric" value="${w.reps || ""}" placeholder="–"></div>
+      <div class="fcell"><label>重量 KG</label><input id="e_wt" type="number" inputmode="decimal" step="0.5" value="${w.wt || ""}" placeholder="–"></div>
+    </div>
+    <div class="frow">
+      <div class="fcell"><label>时长 MIN</label><input id="e_dur" type="number" inputmode="decimal" value="${w.dur || ""}" placeholder="–"></div>
+      <div class="fcell text" style="flex:2"><label>备注</label><input id="e_note" value="${esc(w.note || "")}" placeholder="RPE 8 / 力竭"></div>
+    </div>
+    <div class="sheetact">
+      ${rec ? `<button class="danger" id="e_del">删除</button>` : ""}
+      <button class="ghost" id="e_cancel">取消</button>
+      <button class="go" id="e_save">保存</button></div>`;
+  openSheet(h);
+  const g = id => document.getElementById(id);
+  document.querySelectorAll("[data-rn]").forEach(b => b.onclick = () => { g("e_name").value = b.dataset.rn; });
+  g("e_cancel").onclick = closeSheet;
+  if (rec) g("e_del").onclick = () => { removeRec("workouts", rec.id); closeSheet(); render(); };
+  g("e_save").onclick = () => {
+    const name = g("e_name").value.trim();
+    if (!name) { toast("动作名称不能为空"); return; }
+    const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
+    const body = {
+      date: w.date, name, sets: num("e_sets"), reps: num("e_reps"),
+      wt: num("e_wt"), dur: num("e_dur"), note: g("e_note").value.trim(), ts: Date.now()
+    };
+    if (rec) Object.assign(rec, body);
+    else S.workouts.push(Object.assign({ id: newId() }, body));
+    save(); closeSheet(); render(); queueSync();
+  };
+}
+
+/* ---------------- 趋势 ---------------- */
+function renderTrend() {
+  const days = []; for (let i = 13; i >= 0; i--) days.push(shiftDay(todayKey(), -i));
+  let h = `<div class="datebar"><div class="d">近 14 天</div></div>
+    <div class="legend">
+      <span><s style="background:var(--carb)"></s>碳水</span>
+      <span><s style="background:var(--prot)"></s>蛋白</span>
+      <span><s style="background:var(--fat)"></s>脂肪</span>
+      <span><s style="background:var(--lift)"></s>训练日</span>
+    </div><div class="card">`;
+  let n = 0, sc = 0, sp = 0, sf = 0, td = 0;
+  for (const d of days) {
+    const t = targets(d), e = eatenOn(d), ex = exOn(d);
+    const has = e.c + e.p + e.f > 0;
+    if (has) { n++; sc += e.c / t.c; sp += e.p / t.p; sf += e.f / t.f; }
+    if (ex.length) td++;
+    const bar = (v, tg, col) => {
+      const pc = tg > 0 ? v / tg : 0;
+      return `<div class="tbar"><i style="width:${Math.min(pc, 1) * 100}%;background:${pc > 1.1 ? "var(--over)" : col}"></i></div>`;
+    };
+    h += `<div class="trendrow"><div class="td">${d.slice(5)}</div>
+      <div class="bars">${bar(e.c, t.c, "var(--carb)")}${bar(e.p, t.p, "var(--prot)")}${bar(e.f, t.f, "var(--fat)")}</div>
+      <div class="tk">${ex.length ? `<span style="color:var(--lift)">●</span> ` : ""}${has ? nf(e.kcal) : "—"}</div></div>`;
+  }
+  h += `</div>`;
+  if (n || td) h += `<div class="card"><h4>汇总</h4><div class="readout">
+      ${n ? `有记录 <b>${n}</b> 天 · 达成率 碳水 <b>${r0(sc / n * 100)}%</b> 蛋白 <b>${r0(sp / n * 100)}%</b> 脂肪 <b>${r0(sf / n * 100)}%</b><br>` : ""}
+      训练 <b>${td}</b> 天 / 14</div></div>`;
+  scroll.innerHTML = h;
+}
+
+/* ---------------- 设置 ---------------- */
+function renderSettings() {
+  const t = targets(todayKey());
+  const sy = S.sync;
+  const lastTxt = sy.last ? new Date(sy.last).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "从未";
+  scroll.innerHTML = `
+  <div class="datebar"><div class="d">设置</div></div>
+
+  <div class="card"><h4>体重与系数</h4>
+    <div class="fld"><label>体重<small>记入今天；历史日期按当日体重算目标</small></label>
+      <input id="s_w" type="number" inputmode="decimal" step="0.1" value="${weightOn(todayKey())}"></div>
+    <div class="fld"><label>碳水 g/kg</label><input id="s_kc" type="number" inputmode="decimal" step="0.1" value="${S.kc}"></div>
+    <div class="fld"><label>蛋白 g/kg</label><input id="s_kp" type="number" inputmode="decimal" step="0.1" value="${S.kp}"></div>
+    <div class="fld"><label>脂肪 g/kg</label><input id="s_kf" type="number" inputmode="decimal" step="0.1" value="${S.kf}"></div>
+    <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g
+      · <b>${nf(t.kcal)}</b> kcal (<b>${r1(t.kcal / t.w)}</b> kcal/kg)</div>
+  </div>
+
+  <div class="card"><h4>多端同步</h4>
+    <div class="fld"><label>GitHub Token<small>需要 gist 权限，只存本机</small></label>
+      <input id="y_tok" class="wide" type="password" placeholder="ghp_... / github_pat_..." value="${esc(sy.token)}"></div>
+    <div class="fld"><label>Gist ID<small>两端填同一个即可互通</small></label>
+      <input id="y_gid" class="wide" type="text" placeholder="留空后点下方创建" value="${esc(sy.gistId)}"></div>
+    <div class="readout" style="margin-top:9px">上次同步 <b>${lastTxt}</b></div>
+    <div class="btnrow">
+      <button id="y_new">创建新 Gist</button>
+      <button id="y_now" class="pri">立即同步</button>
+    </div>
+    <div class="readout" style="font-family:var(--sans);font-size:12px;line-height:1.6;color:var(--ink-faint);margin-top:9px">
+      在电脑上打开同一个网址，填入相同的 Token 与 Gist ID，两边就会自动合并。
+      同步内容只有饮食、训练、体重、食物库和系数——API key 和 Token 不会被上传。
+    </div>
+  </div>
+
+  <div class="card"><h4>Claude 营养查询</h4>
+    <div class="fld"><label>API Key<small>只存本机，不参与同步</small></label>
+      <input id="s_key" class="wide" type="password" placeholder="sk-ant-..." value="${esc(S.apiKey)}"></div>
+    <div class="fld"><label>模型</label>
+      <select id="s_model">
+        <option value="claude-sonnet-5">Sonnet 5 · 准确</option>
+        <option value="claude-haiku-4-5-20251001">Haiku 4.5 · 快而省</option>
+        <option value="claude-opus-5">Opus 5 · 最强</option>
+      </select></div>
+    <div class="readout" style="margin-top:9px">本机食物库 <b>${Object.keys(S.lib).length}</b> 条</div>
+    <div class="btnrow"><button id="b_test">测试连接</button><button id="b_lib">管理食物库</button></div>
+  </div>
+
+  <div class="card"><h4>数据</h4>
+    <div class="readout">饮食 <b>${S.entries.length}</b> 条 · 训练 <b>${S.workouts.length}</b> 条
+      · 跨 <b>${new Set(S.entries.map(e => e.date).concat(S.workouts.map(w => w.date))).size}</b> 天</div>
+    <div class="btnrow">
+      <button id="b_csv">饮食 CSV</button>
+      <button id="b_wcsv">训练 CSV</button>
+      <button id="b_json">导出备份</button>
+      <button id="b_imp">导入备份</button>
+    </div>
+  </div>`;
+
+  const q = id => scroll.querySelector(id);
+  const bind = (id, fn) => { const el = q(id); el.onchange = () => { fn(el); touchSettings(); save(); render(); queueSync(); }; };
+  bind("#s_w", el => { const v = parseFloat(el.value); if (v > 0) { S.weight = v; S.weights[todayKey()] = { v, ts: Date.now() }; } });
+  bind("#s_kc", el => S.kc = parseFloat(el.value) || 0);
+  bind("#s_kp", el => S.kp = parseFloat(el.value) || 0);
+  bind("#s_kf", el => S.kf = parseFloat(el.value) || 0);
+  q("#s_key").onchange = e => { S.apiKey = e.target.value.trim(); save(); toast("已保存到本机"); };
+  const ms = q("#s_model"); ms.value = S.model;
+  ms.onchange = () => { S.model = ms.value; touchSettings(); save(); queueSync(); };
+  q("#y_tok").onchange = e => { S.sync.token = e.target.value.trim(); save(); };
+  q("#y_gid").onchange = e => { S.sync.gistId = e.target.value.trim(); save(); };
+  q("#y_new").onclick = createGist;
+  q("#y_now").onclick = () => syncNow(false);
+  q("#b_test").onclick = testKey;
+  q("#b_lib").onclick = showLib;
+  q("#b_csv").onclick = exportCSV;
+  q("#b_wcsv").onclick = exportWorkoutCSV;
+  q("#b_json").onclick = exportJSON;
+  q("#b_imp").onclick = importJSON;
+}
+
+/* ---------------- records / tombstones ---------------- */
+function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function removeRec(field, id) {
+  S[field] = S[field].filter(x => x.id !== id);
+  S.tomb[id] = Date.now();
+  save(); queueSync();
+}
+
+/* ---------------- merge ---------------- */
+function merge(local, remote) {
+  const out = JSON.parse(JSON.stringify(local));
+  out.tomb = Object.assign({}, local.tomb || {});
+  for (const k in (remote.tomb || {})) if (!(k in out.tomb) || remote.tomb[k] > out.tomb[k]) out.tomb[k] = remote.tomb[k];
+
+  for (const field of ["entries", "workouts"]) {
+    const all = {};
+    for (const x of (local[field] || [])) all[x.id] = x;
+    for (const x of (remote[field] || [])) {
+      const cur = all[x.id];
+      if (!cur || (x.ts || 0) > (cur.ts || 0)) all[x.id] = x;
+    }
+    out[field] = Object.values(all)
+      .filter(x => !(x.id in out.tomb) || (x.ts || 0) > out.tomb[x.id])
+      .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (a.ts || 0) - (b.ts || 0));
+  }
+  out.weights = Object.assign({}, local.weights);
+  for (const d in (remote.weights || {})) {
+    const r = remote.weights[d], l = out.weights[d];
+    if (!l || (r.ts || 0) > (l.ts || 0)) out.weights[d] = r;
+  }
+  out.lib = Object.assign({}, local.lib);
+  for (const n in (remote.lib || {})) {
+    const r = remote.lib[n], l = out.lib[n];
+    if (!l || (r.ts || 0) > (l.ts || 0)) out.lib[n] = r;
+  }
+  if ((remote.settingsTs || 0) > (local.settingsTs || 0)) {
+    out.weight = remote.weight; out.kc = remote.kc; out.kp = remote.kp;
+    out.kf = remote.kf; out.model = remote.model; out.settingsTs = remote.settingsTs;
+  }
+  // 清理 120 天前的墓碑，控制体积
+  const cut = Date.now() - 120 * 864e5;
+  for (const k in out.tomb) if (out.tomb[k] < cut) delete out.tomb[k];
+  return out;
+}
+
+/* ---------------- Gist sync ---------------- */
+function syncPayload() {
+  return {
+    v: 2, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf, model: S.model,
+    settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
+    weights: S.weights, lib: S.lib, tomb: S.tomb
+  };
+}
+function dot(cls) {
+  const d = document.getElementById("syncdot");
+  d.className = ""; if (cls) d.classList.add(cls);
+}
+async function gh(path, opts) {
+  const res = await fetch("https://api.github.com" + path, Object.assign({
+    headers: {
+      "Authorization": "Bearer " + S.sync.token,
+      "Accept": "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json"
+    }
+  }, opts || {}));
+  if (!res.ok) {
+    let m = "HTTP " + res.status;
+    if (res.status === 401) m = "Token 无效或缺少 gist 权限";
+    if (res.status === 404) m = "找不到这个 Gist ID";
+    try { const j = await res.json(); if (j.message && res.status !== 401 && res.status !== 404) m = j.message; } catch (e) {}
+    throw new Error(m);
+  }
+  return res.json();
+}
+async function createGist() {
+  if (!S.sync.token) { toast("先填 GitHub Token"); return; }
+  dot("busy");
+  try {
+    const files = {}; files[GIST_FILE] = { content: JSON.stringify(syncPayload()) };
+    const j = await gh("/gists", {
+      method: "POST",
+      body: JSON.stringify({ description: "Macros sync store", public: false, files })
+    });
+    S.sync.gistId = j.id; S.sync.last = Date.now(); save(); dot("ok"); render();
+    toast("已创建，Gist ID：" + j.id.slice(0, 10) + "…");
+  } catch (e) { dot("err"); toast(String(e.message).slice(0, 80)); }
+}
+async function syncNow(silent) {
+  if (syncing) return;
+  if (!S.sync.token || !S.sync.gistId) { if (!silent) toast("先填 Token 和 Gist ID"); return; }
+  syncing = true; dot("busy");
+  try {
+    const j = await gh("/gists/" + S.sync.gistId, { method: "GET" });
+    const f = j.files && j.files[GIST_FILE];
+    let remote = {};
+    if (f) {
+      if (f.truncated) throw new Error("数据过大，请先导出备份并清理");
+      remote = JSON.parse(f.content || "{}");
+    }
+    const merged = merge(S, remote);
+    merged.apiKey = S.apiKey;
+    merged.sync = S.sync;
+    S = merged;
+    const files = {}; files[GIST_FILE] = { content: JSON.stringify(syncPayload()) };
+    await gh("/gists/" + S.sync.gistId, { method: "PATCH", body: JSON.stringify({ files }) });
+    S.sync.last = Date.now(); save(); dot("ok"); render();
+    if (!silent) toast("同步完成 · 饮食 " + S.entries.length + " · 训练 " + S.workouts.length);
+  } catch (e) {
+    dot("err"); if (!silent) toast(String(e.message).slice(0, 80));
+  } finally { syncing = false; }
+}
+function queueSync() {
+  if (!S.sync.token || !S.sync.gistId) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => syncNow(true), 4000);
+}
+
+/* ---------------- 食物库 ---------------- */
+function showLib() {
+  const names = Object.keys(S.lib).sort();
+  let h = `<h3>食物库</h3><div class="sh-sub">每 100 g 的碳水 / 蛋白 / 脂肪，点 × 删除</div>`;
+  for (const n of names) {
+    const v = S.lib[n];
+    h += `<div class="item"><div class="it1">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n)}</span>
+      <span style="font-family:var(--mono);font-size:11.5px;color:var(--ink-mute)">${r1(v.c)} · ${r1(v.p)} · ${r1(v.f)}</span>
+      <button class="drop" data-lib="${esc(n)}">×</button></div></div>`;
+  }
+  h += `<div class="sheetact"><button class="go" id="sh_close">完成</button></div>`;
+  openSheet(h);
+  document.querySelectorAll("[data-lib]").forEach(b => b.onclick = () => {
+    delete S.lib[b.dataset.lib]; touchSettings(); save(); showLib(); queueSync();
+  });
+  document.getElementById("sh_close").onclick = closeSheet;
+}
+
+/* ---------------- sheet ---------------- */
+const sheet = document.getElementById("sheet"), sheetbody = document.getElementById("sheetbody");
+function openSheet(html) { sheetbody.innerHTML = html; sheet.classList.add("on"); }
+function closeSheet() { sheet.classList.remove("on"); sheetbody.innerHTML = ""; pending = null; }
+sheet.onclick = e => { if (e.target === sheet) closeSheet(); };
+
+/* ---------------- 饮食录入 ---------------- */
+async function submit() {
+  const inp = document.getElementById("inp"), text = inp.value.trim();
+  if (!text) return;
+  const quick = quickParse(text);
+  if (quick) { review([quick]); return; }
+  if (!S.apiKey) { toast("先在设置里填 API Key"); view = "set"; render(); return; }
+  const btn = document.getElementById("go");
+  btn.disabled = true; btn.textContent = "…";
+  document.getElementById("hint").textContent = "正在查询营养数据…";
+  try {
+    const items = await askClaude(text);
+    if (!items.length) { toast("没解析出食物，换个说法试试"); return; }
+    review(items);
+  } catch (err) { toast(String(err.message || err).slice(0, 90)); }
+  finally {
+    btn.disabled = false; btn.textContent = "记录";
+    const hint = document.getElementById("hint");
+    if (hint) hint.textContent = "库内食物直接匹配，未知食物才会问 Claude";
+  }
+}
+function quickParse(text) {
+  const m = text.match(/^\s*(.+?)\s*(\d+(?:\.\d+)?)\s*(?:g|克|ml|毫升)?\s*$/i)
+        || text.match(/^\s*(\d+(?:\.\d+)?)\s*(?:g|克|ml|毫升)\s*(.+?)\s*$/i);
+  if (!m) return null;
+  let name, grams;
+  if (isNaN(parseFloat(m[1]))) { name = m[1].trim(); grams = parseFloat(m[2]); }
+  else { grams = parseFloat(m[1]); name = m[2].trim(); }
+  const keys = Object.keys(S.lib);
+  const hit = keys.find(k => k === name) || keys.find(k => k.includes(name) || name.includes(k));
+  if (!hit) return null;
+  const v = S.lib[hit];
+  return { name: hit, grams, c100: v.c, p100: v.p, f100: v.f, conf: "库", note: "" };
+}
+
+const SYS = `你是营养数据助手。用户用中文或英文描述吃了什么，你要拆成具体食物条目并给出营养成分。
+
+规则：
+1. 只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码围栏。
+2. 格式：{"items":[{"name":"食物名","grams":分量数字,"carbs_100g":数字,"protein_100g":数字,"fat_100g":数字,"confidence":"high|medium|low","note":"简短说明或空字符串"}]}
+3. carbs_100g / protein_100g / fat_100g 是该食物每 100 克(或每 100 毫升液体)的克数。
+4. grams 是用户实际摄入的总克数。遇到「一碗」「一个」「一份」等模糊量词，按常见份量估算并在 note 里注明假设，confidence 设为 medium 或 low。参考：一碗米饭≈250g，一个鸡蛋≈50g，一片吐司≈35g，一杯牛奶≈240ml，一份炒菜≈200g。
+5. name 用简洁通用的中文名，标注关键状态，如「白米饭(熟)」「鸡胸肉(生)」。同一食物名称保持一致，便于建立食物库。
+6. 熟食按熟重给营养值；如果用户说的是生重就按生重。
+7. 复合菜肴(如宫保鸡丁)整体给一条，按整道菜每 100g 的平均值估算，confidence 设为 low。
+8. 数值要合理：任何食物每 100g 的碳水+蛋白+脂肪之和不应超过 100。`;
+
+async function askClaude(text) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json", "x-api-key": S.apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify({ model: S.model, max_tokens: 1200, system: SYS, messages: [{ role: "user", content: text }] })
+  });
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { const j = await res.json(); if (j.error && j.error.message) msg = j.error.message; } catch (e) {}
+    throw new Error(msg);
+  }
+  const data = await res.json();
+  const txt = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+  const clean = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const a = clean.indexOf("{"), b = clean.lastIndexOf("}");
+  if (a < 0 || b < 0) throw new Error("返回格式异常");
+  const parsed = JSON.parse(clean.slice(a, b + 1));
+  return (parsed.items || []).map(it => ({
+    name: String(it.name || "未知食物"),
+    grams: Math.max(0, Number(it.grams) || 0),
+    c100: Math.max(0, Number(it.carbs_100g) || 0),
+    p100: Math.max(0, Number(it.protein_100g) || 0),
+    f100: Math.max(0, Number(it.fat_100g) || 0),
+    conf: it.confidence || "medium",
+    note: String(it.note || "")
+  })).filter(x => x.grams > 0);
+}
+
+function review(items) {
+  pending = items;
+  openSheet(`<h3>确认后记入${meal}</h3>
+    <div class="sh-sub">克数可以直接改，营养素会跟着换算</div>
+    <div id="items"></div>
+    <div class="sheetact"><button class="ghost" id="sh_cancel">取消</button>
+    <button class="go" id="sh_save">全部记录</button></div>`);
+  drawItems();
+  document.getElementById("sh_cancel").onclick = closeSheet;
+  document.getElementById("sh_save").onclick = commit;
+}
+function drawItems() {
+  const box = document.getElementById("items");
+  if (!box) return;
+  box.innerHTML = pending.map((it, i) => {
+    const k = it.grams / 100;
+    const lab = it.conf === "库" ? "库" : ({ high: "高", medium: "中", low: "估" }[it.conf] || "中");
+    return `<div class="item">
+      <div class="it1"><input class="nm" data-i="${i}" value="${esc(it.name)}">
+        <span class="conf ${it.conf === "low" ? "low" : ""}">${lab}</span>
+        <span class="gwrap"><input class="gm" data-g="${i}" type="number" inputmode="decimal" value="${r0(it.grams)}"><em>g</em></span>
+        <button class="drop" data-x="${i}">×</button></div>
+      <div class="it2">
+        <span style="color:var(--carb)">碳 ${r1(it.c100 * k)}</span>
+        <span style="color:var(--prot)">蛋 ${r1(it.p100 * k)}</span>
+        <span style="color:var(--fat)">脂 ${r1(it.f100 * k)}</span>
+        <span>${r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k)} kcal</span></div>
+      ${it.note ? `<div class="it2" style="margin-top:5px;color:var(--ink-faint);font-family:var(--sans)">${esc(it.note)}</div>` : ""}
+    </div>`;
+  }).join("");
+  box.querySelectorAll("[data-g]").forEach(el => el.oninput = () => {
+    const i = +el.dataset.g, it = pending[i];
+    it.grams = Math.max(0, parseFloat(el.value) || 0);
+    const k = it.grams / 100, line = el.closest(".item").querySelectorAll(".it2")[0].children;
+    line[0].textContent = "碳 " + r1(it.c100 * k);
+    line[1].textContent = "蛋 " + r1(it.p100 * k);
+    line[2].textContent = "脂 " + r1(it.f100 * k);
+    line[3].textContent = r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k) + " kcal";
+  });
+  box.querySelectorAll("[data-i]").forEach(el => el.oninput = () => pending[+el.dataset.i].name = el.value);
+  box.querySelectorAll("[data-x]").forEach(el => el.onclick = () => {
+    pending.splice(+el.dataset.x, 1);
+    if (!pending.length) { closeSheet(); return; }
+    drawItems();
+  });
+}
+function commit() {
+  const now = Date.now();
+  for (const it of pending) {
+    if (it.grams <= 0) continue;
+    const k = it.grams / 100;
+    S.entries.push({
+      id: newId(), date: cursor, meal, name: it.name, g: it.grams,
+      c: it.c100 * k, p: it.p100 * k, f: it.f100 * k, ts: now
+    });
+    S.lib[it.name] = { c: it.c100, p: it.p100, f: it.f100, ts: now };
+  }
+  touchSettings(); save(); closeSheet();
+  const inp = document.getElementById("inp");
+  if (inp) { inp.value = ""; inp.style.height = "40px"; }
+  render(); queueSync();
+}
+
+async function testKey() {
+  if (!S.apiKey) { toast("先填 API Key"); return; }
+  toast("测试中…");
+  try {
+    const items = await askClaude("一个中等大小的水煮鸡蛋");
+    toast(items.length ? "连接正常 · " + items[0].name : "连上了，但没解析出结果");
+  } catch (e) { toast("失败：" + String(e.message).slice(0, 70)); }
+}
+
+/* ---------------- 导入导出 ---------------- */
+function download(name, text, type) {
+  const blob = new Blob([text], { type: type + ";charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+}
+function exportCSV() {
+  const head = "日期,餐次,食物,分量g,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,体重kg\n";
+  const rows = S.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(e => {
+    const t = targets(e.date);
+    return [e.date, e.meal, '"' + e.name.replace(/"/g, '""') + '"', r1(e.g), r1(e.c), r1(e.p), r1(e.f),
+      r0(e.c * 4 + e.p * 4 + e.f * 9), r1(t.c), r1(t.p), r1(t.f), r1(t.w)].join(",");
+  }).join("\n");
+  download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
+}
+function exportWorkoutCSV() {
+  const head = "日期,星期,动作,组数,次数,重量kg,容量kg,时长min,备注\n";
+  const rows = S.workouts.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(w => {
+    const [y, m, d] = w.date.split("-").map(Number);
+    const dw = DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
+    return [w.date, dw, '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
+      w.wt || "", volOf(w) || "", w.dur || "", '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
+  }).join("\n");
+  download("macros_training_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
+}
+function exportJSON() { download("macros_backup_" + todayKey() + ".json", JSON.stringify(S), "application/json"); }
+function importJSON() {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = ".json,application/json";
+  inp.onchange = () => {
+    const f = inp.files[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const j = JSON.parse(rd.result);
+        if (!j || !Array.isArray(j.entries)) throw new Error("bad");
+        const inc = migrate(j);
+        const keepKey = S.apiKey, keepSync = S.sync;
+        S = merge(S, inc);
+        S.apiKey = keepKey || inc.apiKey || ""; S.sync = keepSync;
+        save(); render(); queueSync();
+        toast("已合并 · 饮食 " + S.entries.length + " · 训练 " + S.workouts.length);
+      } catch (e) { toast("文件格式不对，导入取消"); }
+    };
+    rd.readAsText(f);
+  };
+  inp.click();
+}
+
+/* ---------------- boot ---------------- */
+document.querySelectorAll("#tabbar button").forEach(b =>
+  b.onclick = () => { view = b.dataset.tab; scroll.scrollTop = 0; render(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) syncNow(true); });
+window.addEventListener("online", () => syncNow(true));
+render();
+syncNow(true);
+</script>
+</body>
+</html>
