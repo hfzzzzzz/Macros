@@ -221,6 +221,8 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .btnrow button{flex:1;min-width:84px;padding:9px 0;border-radius:9px;background:var(--surface-2);
   font-size:13px;color:var(--ink-mute)}
 .btnrow button.pri{background:var(--ink);color:var(--ground);font-weight:600}
+.btnrow button.dang{color:var(--over)}
+.btnrow button[disabled]{opacity:.4}
 .readout{font-family:var(--mono);font-size:12.5px;color:var(--ink-mute);
   font-variant-numeric:tabular-nums;line-height:1.7}
 .readout b{color:var(--ink);font-weight:600}
@@ -271,7 +273,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-07-31.4";
+const APP_VERSION = "2026-07-31.5";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -323,9 +325,9 @@ function blank() {
   const lib = {};
   for (const k in DEFAULT_LIB) lib[k] = { c: DEFAULT_LIB[k][0], p: DEFAULT_LIB[k][1], f: DEFAULT_LIB[k][2], ts: 0 };
   return {
-    v: 3, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 4, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
-    plans: [], activePlan: "",
+    libTomb: {}, plans: [], activePlan: "",
     sync: { token: "", gistId: "", last: 0 }, _seed: lib
   };
 }
@@ -353,6 +355,10 @@ function migrate(o) {
     s.activePlan = o.activePlan || "";
     s.v = 3;
   }
+  if (!o.v || o.v < 4) {
+    s.libTomb = o.libTomb || {};
+    s.v = 4;
+  }
   // 分化必须是 7 天，老数据或手改过的备份都补齐
   s.plans = (s.plans || []).map(p => {
     const days = [];
@@ -362,7 +368,9 @@ function migrate(o) {
     }
     return Object.assign({}, p, { days, ts: p.ts || 0 });
   });
-  if (!Object.keys(s.lib).length) s.lib = b._seed;
+  // 食物库空了才补种子，且只补没被用户删过的 —— 否则「清空食物库」一刷新就白做了
+  if (!Object.keys(s.lib).length)
+    for (const k in b._seed) if (!(k in s.libTomb)) s.lib[k] = b._seed[k];
   delete s._seed; delete s.apiKey; delete s.model; delete s.mode;
   return s;
 }
@@ -1059,11 +1067,17 @@ function merge(local, remote) {
     const r = remote.weights[d], l = out.weights[d];
     if (!l || (r.ts || 0) > (l.ts || 0)) out.weights[d] = r;
   }
+  out.libTomb = Object.assign({}, local.libTomb || {});
+  for (const k in (remote.libTomb || {}))
+    if (!(k in out.libTomb) || remote.libTomb[k] > out.libTomb[k]) out.libTomb[k] = remote.libTomb[k];
   out.lib = Object.assign({}, local.lib);
   for (const n in (remote.lib || {})) {
     const r = remote.lib[n], l = out.lib[n];
     if (!l || (r.ts || 0) > (l.ts || 0)) out.lib[n] = r;
   }
+  // 删除时间晚于该条写入时间 → 这条是被删掉的，别让它复活
+  for (const n in out.lib)
+    if ((n in out.libTomb) && (out.lib[n].ts || 0) <= out.libTomb[n]) delete out.lib[n];
   if ((remote.settingsTs || 0) > (local.settingsTs || 0)) {
     out.weight = remote.weight; out.kc = remote.kc; out.kp = remote.kp;
     out.kf = remote.kf; out.settingsTs = remote.settingsTs;
@@ -1074,15 +1088,16 @@ function merge(local, remote) {
   // 清理 120 天前的墓碑，控制体积
   const cut = Date.now() - 120 * 864e5;
   for (const k in out.tomb) if (out.tomb[k] < cut) delete out.tomb[k];
+  for (const k in out.libTomb) if (out.libTomb[k] < cut) delete out.libTomb[k];
   return out;
 }
 
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 3, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 4, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
-    weights: S.weights, lib: S.lib, tomb: S.tomb,
+    weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
     plans: S.plans, activePlan: S.activePlan
   };
 }
@@ -1151,9 +1166,23 @@ function queueSync() {
 }
 
 /* ---------------- 食物库 ---------------- */
+const LIB_HEAD = "食物名称,每100g碳水,每100g蛋白,每100g脂肪";
+const LIB_TPL = LIB_HEAD + "\n鸡胸肉,0,23.1,1.9\n白米饭,25.9,2.6,0.3\n全麦面包,43.3,13.4,4.2";
+
+/* 删一条要写墓碑，否则下次同步会被远端捞回来 */
+function dropLib(name) {
+  delete S.lib[name];
+  S.libTomb[name] = Date.now();
+}
 function showLib() {
   const names = Object.keys(S.lib).sort();
-  let h = `<h3>食物库</h3><div class="sh-sub">每 100 g 的碳水 / 蛋白 / 脂肪，点 × 删除</div>`;
+  let h = `<h3>食物库</h3><div class="sh-sub">${names.length} 条 · 每 100 g 的碳水 / 蛋白 / 脂肪，点 × 删除</div>
+    <div class="btnrow" style="margin-top:0">
+      <button id="lb_imp">导入 / 模板</button>
+      <button id="lb_exp"${names.length ? "" : " disabled"}>导出 CSV</button>
+      <button id="lb_clr" class="dang"${names.length ? "" : " disabled"}>清空</button>
+    </div>`;
+  if (!names.length) h += `<div class="dayempty" style="text-align:center;padding:16px 0">食物库是空的<br>点「导入 / 模板」批量添加，或者记录饮食时逐条建立</div>`;
   for (const n of names) {
     const v = S.lib[n];
     h += `<div class="item"><div class="it1">
@@ -1164,9 +1193,98 @@ function showLib() {
   h += `<div class="sheetact"><button class="go" id="sh_close">完成</button></div>`;
   openSheet(h);
   document.querySelectorAll("[data-lib]").forEach(b => b.onclick = () => {
-    delete S.lib[b.dataset.lib]; touchSettings(); save(); showLib(); queueSync();
+    dropLib(b.dataset.lib); save(); showLib(); queueSync();
   });
+  document.getElementById("lb_imp").onclick = libImportSheet;
+  document.getElementById("lb_exp").onclick = exportLib;
+  // 清空是不可逆的，要点两次
+  const clr = document.getElementById("lb_clr");
+  clr.onclick = () => {
+    if (clr.dataset.arm !== "1") {
+      clr.dataset.arm = "1"; clr.textContent = "再点一次确认";
+      clr.style.color = "var(--over)";
+      setTimeout(() => { if (clr.dataset.arm === "1") { clr.dataset.arm = ""; clr.textContent = "清空"; clr.style.color = ""; } }, 4000);
+      return;
+    }
+    const n = Object.keys(S.lib).length;
+    for (const name of Object.keys(S.lib)) dropLib(name);
+    save(); queueSync(); showLib();
+    toast("已清空 " + n + " 条 · 不会再被同步捞回来");
+  };
   document.getElementById("sh_close").onclick = closeSheet;
+}
+function exportLib() {
+  const rows = Object.keys(S.lib).sort().map(n => {
+    const v = S.lib[n];
+    return ['"' + n.replace(/"/g, '""') + '"', r1(v.c), r1(v.p), r1(v.f)].join(",");
+  }).join("\n");
+  download("macros_foodlib_" + todayKey() + ".csv", "\ufeff" + LIB_HEAD + "\n" + rows, "text/csv");
+}
+/* 够用的 CSV 解析：支持引号包裹、双写转义、CRLF */
+function parseCSV(text) {
+  const rows = [];
+  let row = [], cur = "", q = false;
+  text = String(text).replace(/^\ufeff/, "");
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (c !== "\r") cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows;
+}
+function importLibText(text) {
+  const now = Date.now();
+  let n = 0, bad = 0;
+  for (const r of parseCSV(text)) {
+    if (!r.join("").trim()) continue;                     // 空行
+    const name = (r[0] || "").trim();
+    if (!name || name === "食物名称") continue;            // 表头
+    if (r.length < 4) { bad++; continue; }
+    const c = parseFloat(r[1]), p = parseFloat(r[2]), f = parseFloat(r[3]);
+    if (!isFinite(c) || !isFinite(p) || !isFinite(f) || c < 0 || p < 0 || f < 0 || c + p + f > 100.5) { bad++; continue; }
+    S.lib[name] = { c, p, f, ts: now };
+    delete S.libTomb[name];                               // 重新加回来的要撤墓碑
+    n++;
+  }
+  if (!n) { toast(bad ? "没有一行能用 · 检查是不是「名称,碳水,蛋白,脂肪」四列" : "没解析出食物"); return false; }
+  save(); queueSync();
+  toast("已导入 " + n + " 条" + (bad ? " · " + bad + " 行无效已跳过" : ""));
+  return true;
+}
+function libImportSheet() {
+  openSheet(`<h3>导入食物库</h3>
+    <div class="sh-sub">一行一个食物：名称,碳水,蛋白,脂肪 · 三个数值都是<b>每 100 g</b> 的克数</div>
+    <div class="step"><b>1</b><div>拿模板：复制下面的文字，或下载 CSV 用表格软件填
+      <div class="btnrow"><button id="li_copy">复制模板</button><button id="li_dl">下载 CSV 模板</button></div></div></div>
+    <div class="step"><b>2</b><div>填好后整段粘回这里，表头那行留着
+      <textarea id="li_txt" spellcheck="false">${esc(LIB_TPL)}</textarea></div></div>
+    <div class="step"><b>3</b><div>同名会覆盖，其余保留。也可以直接选文件导入
+      <div class="btnrow"><button id="li_file">从文件导入…</button></div></div></div>
+    <div class="sheetact">
+      <button class="ghost" id="li_cancel">返回</button>
+      <button class="go" id="li_go">导入</button></div>`);
+  const g = id => document.getElementById(id);
+  g("li_copy").onclick = async () => toast(await copyText(LIB_TPL) ? "已复制模板" : "复制失败");
+  g("li_dl").onclick = () => download("macros_foodlib_template.csv", "\ufeff" + LIB_TPL, "text/csv");
+  g("li_cancel").onclick = showLib;
+  g("li_go").onclick = () => { if (importLibText(g("li_txt").value)) showLib(); };
+  g("li_file").onclick = () => {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".csv,.txt,text/csv,text/plain";
+    inp.onchange = () => {
+      const f = inp.files[0]; if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => { if (importLibText(rd.result)) showLib(); };
+      rd.readAsText(f);
+    };
+    inp.click();
+  };
 }
 
 /* ---------------- sheet ---------------- */

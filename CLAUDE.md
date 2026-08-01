@@ -51,7 +51,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `.chips` 本来就是横向滚动的，它「溢出」是设计如此，不是 bug。
 - 截图用 `--screenshot=<path>`；图片会按 `--window-size` 裁剪而不是缩放，所以窄图会**假装**成内容被切掉，别被骗。
 
-最近一次全量验证：51 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
+最近一次全量验证：73 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
 
 ## 设计约束（改代码前先读）
 
@@ -84,7 +84,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
 | `Gist sync` | GitHub API 封装、创建 gist、`syncNow()`、`queueSync()` |
-| `食物库` | `showLib()` |
+| `食物库` | `showLib()` / `dropLib()` / `exportLib()` / `parseCSV()` / `importLibText()` / `libImportSheet()` |
 | `sheet` | 底部弹层的开关 |
 | `饮食录入` | `submit()` / `quickParse()` / `SYS` 提示词 |
 | `手动输入` | `manualSheet()` |
@@ -106,11 +106,11 @@ let trendEx // 进展曲线当前选中的动作名
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 3`）
+### 数据模型（`S`，schema `v: 4`）
 
 ```js
 {
-  v: 3,
+  v: 4,
   weight: 70,                    // 兜底体重，只在 weights 为空时用
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
@@ -122,6 +122,7 @@ let trendEx // 进展曲线当前选中的动作名
   weights:  { "2026-07-31": { v: 72.5, ts } },
   lib:      { "鸡胸肉": { c: 0, p: 23.1, f: 1.9, ts } },   // 每 100g
   tomb:     { "<被删记录的 id>": ts },                      // 墓碑，120 天后清理
+  libTomb:  { "鸡胸肉": ts },                               // 食物库的墓碑，同上
 
   plans: [{ id, name, ts,
     days: [ { name: "推", items: [{ name, sets, reps, wt }] }, … ]  // 恒为 7 项，周一..周日
@@ -152,9 +153,9 @@ let trendEx // 进展曲线当前选中的动作名
 | 字段 | 策略 |
 |---|---|
 | `entries` / `workouts` / `plans` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
-| `weights` / `lib` | 按 key 逐条 last-write-wins（比 `ts`） |
+| `weights` / `lib` | 按 key 逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
+| `tomb` / `libTomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 | 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
-| `tomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 
 触发点：`queueSync()`（4 秒防抖）、页面重新可见、`online` 事件、设置页手动按钮。`#syncdot` 是右上角状态灯（灰=闲 / 橙=同步中 / 绿=成功 / 红=失败）。
 
@@ -167,6 +168,26 @@ let trendEx // 进展曲线当前选中的动作名
 3. **手动**：点「手动」按钮，直接填三大营养素克数（看包装营养表最快）→ `manualSheet()`。
 
 确认保存时会把该食物的每 100g 数值**写回 `S.lib`**，下次就能走路径 1。
+
+### 食物库的批量维护
+
+「设置 → 管理食物库」里有导入 / 导出 / 清空。CSV 格式固定四列，数值都是**每 100 g** 的克数：
+
+```
+食物名称,每100g碳水,每100g蛋白,每100g脂肪
+鸡胸肉,0,23.1,1.9
+"牛肉,瘦",0,22.6,5
+```
+
+- `parseCSV()` 是手写的，支持引号包裹、`""` 转义、CRLF、开头 BOM。别换成 `split(",")`，食物名里有逗号就废了。
+- `importLibText()` 会跳过表头和空行，拒绝负数以及三者之和 > 100.5 的行（跟 `SYS` 提示词里的第 8 条一个道理），同名覆盖，并**撤掉该名字的墓碑**。
+- 导入入口同时支持粘贴和选文件 —— 手机上粘贴好用得多，别只留文件选择。
+- 「清空」要点两次（4 秒内），第一次只是把按钮变成「再点一次确认」。
+
+**清空之所以能生效，靠的是两件事，改这块前都要保住：**
+
+1. 删除走 `dropLib()` 写 `libTomb`，否则下次同步远端会把整库捞回来。
+2. `migrate()` 里补种子那段是 `if (!(k in s.libTomb))` 逐条判断的，不是无脑 `s.lib = b._seed`。改回去的话，用户清空后一刷新 26 条内置食物就全回来了。
 
 ### 训练计划怎么工作
 
@@ -205,8 +226,8 @@ let trendEx // 进展曲线当前选中的动作名
 
 现存的坑：
 
-- **食物库删除会被同步复活。** `showLib()` 删条目只是 `delete S.lib[name]`，没有墓碑；下次同步时远端那条会被 merge 回来。要真删得给 `lib` 也加墓碑机制。
-- **`KEY = "macros_v1"` 但 schema 已经是 `v: 3`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里的 `o.v < 2` / `o.v < 3` 分支。
+- **`KEY = "macros_v1"` 但 schema 已经是 `v: 4`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里的 `o.v < 2` / `< 3` / `< 4` 分支。
+- **食物库墓碑 120 天后会被剪掉。** 剪掉之后，如果某个设备还留着老的 `lib` 条目（`ts: 0` 的种子尤其），它可能重新出现。跟 `tomb` 是同一个取舍，日常用不到这个时间尺度。
 - **同名动作只会匹配到一条计划项。** `doneRec()` 取第一条同名记录；同一天同一动作记了两次，第二条会落到「计划外」分组。统计和曲线不受影响（`exSessions` 会把它们并起来）。
 - **`quickParse()` 的模糊匹配靠 `Object.keys()` 顺序**，第一个 `includes` 命中就赢，结果不稳定。
 - **编辑已有饮食记录不能改日期和餐次**（`manualSheet(rec)` 只改 name/g/c/p/f）。
@@ -215,7 +236,7 @@ let trendEx // 进展曲线当前选中的动作名
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-07-31.3"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-07-31.5"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
