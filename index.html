@@ -222,6 +222,11 @@ button{background:none;border:none;padding:0;cursor:pointer}
   font-size:13px;color:var(--ink-mute)}
 .btnrow button.pri{background:var(--ink);color:var(--ground);font-weight:600}
 .btnrow button.dang{color:var(--over)}
+.tog{flex:none;width:23px;height:23px;border-radius:7px;border:1.5px solid var(--ink-faint);
+  display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;color:transparent}
+.tog.on{background:var(--prot);border-color:var(--prot);color:var(--ground)}
+.tog[disabled]{opacity:.35}
+.tog[disabled].on{background:none;border-color:var(--ink-faint);color:transparent}
 .btnrow button[disabled]{opacity:.4}
 .readout{font-family:var(--mono);font-size:12.5px;color:var(--ink-mute);
   font-variant-numeric:tabular-nums;line-height:1.7}
@@ -273,24 +278,12 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-07-31.5";
+const APP_VERSION = "2026-07-31.6";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
 const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const GIST_FILE = "macros.json";
-
-const DEFAULT_LIB = {
-  "白米饭": [25.9, 2.6, 0.3], "馒头": [47.0, 7.0, 1.1], "全麦面包": [43.3, 13.4, 4.2],
-  "燕麦片": [66.3, 13.5, 6.9], "意面(干)": [74.7, 13.0, 1.5], "土豆": [17.2, 2.0, 0.1],
-  "红薯": [20.1, 1.6, 0.1], "香蕉": [22.8, 1.1, 0.3], "苹果": [13.8, 0.3, 0.2],
-  "鸡胸肉": [0, 23.1, 1.9], "鸡腿肉": [0, 20.0, 7.5], "牛肉(瘦)": [0, 22.6, 5.0],
-  "猪里脊": [0.5, 20.2, 7.9], "三文鱼": [0, 20.4, 13.4], "虾仁": [0.9, 20.9, 1.4],
-  "鸡蛋": [1.1, 12.6, 9.5], "牛奶(全脂)": [4.8, 3.3, 3.6], "希腊酸奶(0脂)": [3.6, 10.0, 0.4],
-  "乳清蛋白粉": [8.0, 76.0, 6.0], "北豆腐": [3.4, 12.2, 4.8], "花生酱": [20.0, 25.0, 50.0],
-  "杏仁": [21.6, 21.2, 49.9], "橄榄油": [0, 0, 100.0], "切达奶酪": [3.1, 24.9, 33.1],
-  "西兰花": [6.6, 2.8, 0.4], "菠菜": [3.6, 2.9, 0.4]
-};
 
 /* 内置分化模板 · days 长度固定 7，对应周一..周日，items 为空即休息日
    用 P(名称, 组数, 次数) 构造；重量留 0，打勾时自动带出你上次的重量 */
@@ -321,14 +314,13 @@ let trendEx = "";      // 进展曲线当前选中的动作
 let syncing = false, syncTimer = null;
 
 /* ---------------- state ---------------- */
+/* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
-  const lib = {};
-  for (const k in DEFAULT_LIB) lib[k] = { c: DEFAULT_LIB[k][0], p: DEFAULT_LIB[k][1], f: DEFAULT_LIB[k][2], ts: 0 };
   return {
     v: 4, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "",
-    sync: { token: "", gistId: "", last: 0 }, _seed: lib
+    sync: { token: "", gistId: "", last: 0 }
   };
 }
 function migrate(o) {
@@ -368,18 +360,15 @@ function migrate(o) {
     }
     return Object.assign({}, p, { days, ts: p.ts || 0 });
   });
-  // 食物库空了才补种子，且只补没被用户删过的 —— 否则「清空食物库」一刷新就白做了
-  if (!Object.keys(s.lib).length)
-    for (const k in b._seed) if (!(k in s.libTomb)) s.lib[k] = b._seed[k];
   delete s._seed; delete s.apiKey; delete s.model; delete s.mode;
   return s;
 }
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) { const b = blank(); b.lib = b._seed; delete b._seed; return b; }
+    if (!raw) return blank();
     return migrate(JSON.parse(raw));
-  } catch (e) { const b = blank(); b.lib = b._seed; delete b._seed; return b; }
+  } catch (e) { return blank(); }
 }
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -1455,6 +1444,10 @@ function manualSheet(rec) {
       <div class="fcell"><label style="color:var(--fat)">脂肪 G</label><input id="m_f" type="number" inputmode="decimal" value="${e.f === "" ? "" : r1(e.f)}" placeholder="0"></div>
     </div>
     <div class="readout" id="m_kcal" style="text-align:center;margin:2px 0 4px"></div>
+    <div class="fld" style="border-bottom:none">
+      <label>存入食物库<small id="m_hint"></small></label>
+      <button class="tog on" id="m_lib">✓</button>
+    </div>
     <div class="sheetact">
       ${isEdit ? `<button class="danger" id="m_del">删除</button>` : ""}
       <button class="ghost" id="m_cancel">取消</button>
@@ -1462,19 +1455,32 @@ function manualSheet(rec) {
 
   const g = id => document.getElementById(id);
   const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
+  /* 库里存的是每 100g，所以必须有名字和分量才能换算 */
+  const per100 = () => {
+    const name = g("m_name").value.trim(), gram = num("m_g");
+    if (!name || name === "手动记录" || !gram) return null;
+    return { name, c: num("m_c") / gram * 100, p: num("m_p") / gram * 100, f: num("m_f") / gram * 100 };
+  };
   const refresh = () => {
     const k = num("m_c") * 4 + num("m_p") * 4 + num("m_f") * 9;
     g("m_kcal").innerHTML = `合计 <b>${r0(k)}</b> kcal`;
+    const v = per100(), tog = g("m_lib");
+    tog.disabled = !v;
+    g("m_hint").textContent = v
+      ? `每 100g ${r1(v.c)} / ${r1(v.p)} / ${r1(v.f)} · 下次输入「${v.name} 150」直接命中`
+      : "要填名称和分量才能换算成每 100g";
   };
-  ["m_c", "m_p", "m_f"].forEach(id => g(id).oninput = refresh);
+  ["m_c", "m_p", "m_f", "m_name"].forEach(id => g(id).oninput = refresh);
   // 若名称在食物库里，改分量会自动按每 100g 换算
   g("m_g").oninput = () => {
     const hit = S.lib[g("m_name").value.trim()];
-    if (!hit) return;
-    const k = num("m_g") / 100;
-    g("m_c").value = r1(hit.c * k); g("m_p").value = r1(hit.p * k); g("m_f").value = r1(hit.f * k);
+    if (hit) {
+      const k = num("m_g") / 100;
+      g("m_c").value = r1(hit.c * k); g("m_p").value = r1(hit.p * k); g("m_f").value = r1(hit.f * k);
+    }
     refresh();
   };
+  g("m_lib").onclick = () => g("m_lib").classList.toggle("on");
   refresh();
   g("m_cancel").onclick = closeSheet;
   if (isEdit) g("m_del").onclick = () => { removeRec("entries", rec.id); closeSheet(); render(); };
@@ -1484,10 +1490,17 @@ function manualSheet(rec) {
     const body = { name: g("m_name").value.trim() || "手动记录", g: num("m_g"), c, p, f, ts: Date.now() };
     if (isEdit) Object.assign(rec, body);
     else S.entries.push(Object.assign({ id: newId(), date: cursor, meal }, body));
+    // 存进食物库 = 顺带同步上去，syncPayload 里本来就带 lib
+    const v = g("m_lib").classList.contains("on") ? per100() : null;
+    if (v) {
+      S.lib[v.name] = { c: v.c, p: v.p, f: v.f, ts: Date.now() };
+      delete S.libTomb[v.name];
+    }
     save(); closeSheet();
     const inp = document.getElementById("inp");
     if (inp) { inp.value = ""; inp.style.height = "40px"; }
     render(); queueSync();
+    if (v) toast("已记录 · 「" + v.name + "」已存入食物库");
   };
 }
 
