@@ -153,6 +153,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .chip{flex:none;padding:4px 11px;border-radius:20px;background:var(--surface-2);font-size:12px;
   color:var(--ink-mute);border:1px solid transparent;white-space:nowrap}
 .chip.on{background:var(--ink);color:var(--ground);font-weight:600}
+.chip.act{background:none;border-color:var(--line);color:var(--prot)}
 .cbar{display:flex;gap:8px;align-items:flex-end}
 .cbar textarea{flex:1;background:var(--surface-2);border:1px solid var(--line);border-radius:11px;
   padding:9px 11px;resize:none;height:40px;max-height:110px;line-height:1.35;outline:none}
@@ -204,6 +205,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .fcell input{width:100%;background:none;border:none;outline:none;font-family:var(--mono);
   font-variant-numeric:tabular-nums;font-size:15px}
 .fcell.text input{font-family:var(--sans)}
+.fcell select{width:100%;background:none;border:none;outline:none;font-family:var(--mono);font-size:15px}
 
 .card{background:var(--surface);border-radius:13px;padding:13px 14px;margin-bottom:12px}
 .card h4{margin:0 0 11px;font-size:11px;letter-spacing:.16em;color:var(--ink-faint);font-weight:600}
@@ -278,12 +280,17 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-07-31.6";
+const APP_VERSION = "2026-08-03";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
 const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const GIST_FILE = "macros.json";
+/* 食物库按「一份」存营养值：固体一份 = 100 g，液体一份 = 250 ml。
+   老数据没有 u 字段，一律当固体，所以升级不会动到任何已有数值。 */
+const UNITS = ["g", "ml"];
+function baseOf(u) { return u === "ml" ? 250 : 100; }
+function unitOf(name) { const v = S.lib[name]; return (v && v.u) || "g"; }
 
 /* 内置分化模板 · days 长度固定 7，对应周一..周日，items 为空即休息日
    用 P(名称, 组数, 次数) 构造；重量留 0，打勾时自动带出你上次的重量 */
@@ -317,9 +324,9 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 4, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 5, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
-    libTomb: {}, plans: [], activePlan: "",
+    libTomb: {}, plans: [], activePlan: "", routines: [],
     sync: { token: "", gistId: "", last: 0 }
   };
 }
@@ -351,6 +358,19 @@ function migrate(o) {
     s.libTomb = o.libTomb || {};
     s.v = 4;
   }
+  if (!o.v || o.v < 5) {
+    s.routines = Array.isArray(o.routines) ? o.routines : [];
+    s.v = 5;
+  }
+  // 补单位：老条目全是固体，标成 g，数值一个都不动
+  const lib = {};
+  for (const n in s.lib) {
+    const x = s.lib[n];
+    lib[n] = { c: x.c, p: x.p, f: x.f, ts: x.ts || 0, u: UNITS.indexOf(x.u) >= 0 ? x.u : "g" };
+  }
+  s.lib = lib;
+  s.entries = (s.entries || []).map(e => UNITS.indexOf(e.u) >= 0 ? e : Object.assign({}, e, { u: "g" }));
+  s.routines = (s.routines || []).map(r => Object.assign({ meal: MEALS[0], items: [], ts: 0 }, r));
   // 分化必须是 7 天，老数据或手改过的备份都补齐
   s.plans = (s.plans || []).map(p => {
     const days = [];
@@ -523,7 +543,7 @@ function renderToday() {
       <span class="mk">${nf(sub.c * 4 + sub.p * 4 + sub.f * 9)} kcal</span></div>`;
     for (const x of rs) h += `<div class="row">
       <div class="rtap" data-eedit="${x.id}">
-        <div class="name"><b>${esc(x.name)}</b><i>${x.g ? r0(x.g) + " g" : "手动"}</i></div>
+        <div class="name"><b>${esc(x.name)}</b><i>${x.g ? r0(x.g) + " " + (x.u || "g") : "手动"}</i></div>
         <div class="macros"><s class="c">${r1(x.c)}</s> · <s class="p">${r1(x.p)}</s> · <s class="f">${r1(x.f)}</s></div>
       </div><button class="del" data-del="${x.id}">×</button></div>`;
     h += `</div>`;
@@ -537,11 +557,17 @@ function renderToday() {
 }
 
 function renderComposer() {
-  composer.innerHTML = `<div class="chips">${MEALS.map(m =>
+  const ro = S.routines || [];
+  composer.innerHTML = `${ro.length ? `<div class="chips">${ro.map(r =>
+      `<button class="chip act" data-ruse="${r.id}">⚡ ${esc(r.name)}</button>`).join("")}
+      <button class="chip act" data-romg="1">⚙</button></div>` : ""}
+    <div class="chips">${MEALS.map(m =>
     `<button class="chip${m === meal ? " on" : ""}" data-meal="${m}">${m}</button>`).join("")}</div>
     <div class="cbar"><textarea id="inp" rows="1" placeholder="吃了什么？例如：150g鸡胸 + 一碗米饭"></textarea>
     <button id="man" class="alt">手动</button><button id="go">记录</button></div>
-    <div class="hint" id="hint">库内直接命中 · 新食物用 Claude App 查后粘回 · 只有克数点「手动」</div>`;
+    <div class="hint" id="hint">库内直接命中 · 新食物用 Claude App 查后粘回</div>`;
+  composer.querySelectorAll("[data-ruse]").forEach(b => b.onclick = () => applyRoutine(b.dataset.ruse));
+  composer.querySelectorAll("[data-romg]").forEach(b => b.onclick = routineSheet);
   composer.querySelectorAll("[data-meal]").forEach(b => b.onclick = () => { meal = b.dataset.meal; renderComposer(); });
   const inp = composer.querySelector("#inp");
   inp.addEventListener("input", () => { inp.style.height = "40px"; inp.style.height = Math.min(inp.scrollHeight, 110) + "px"; });
@@ -976,8 +1002,8 @@ function renderSettings() {
       库里没有的食物，在 Claude App 里查一次再把 JSON 粘回来，走你的订阅，不产生额外费用。
       建议在 claude.ai 新建一个项目，把下面这段设为项目指令，之后直接输入食物名就会返回 JSON。
     </div>
-    <div class="readout" style="margin-top:9px">本机食物库 <b>${Object.keys(S.lib).length}</b> 条</div>
-    <div class="btnrow"><button id="b_prompt">复制项目指令</button><button id="b_lib">管理食物库</button></div>
+    <div class="readout" style="margin-top:9px">本机食物库 <b>${Object.keys(S.lib).length}</b> 条 · 常规搭配 <b>${S.routines.length}</b> 组</div>
+    <div class="btnrow"><button id="b_prompt">复制项目指令</button><button id="b_lib">管理食物库</button><button id="b_ro">常规摄入</button></div>
   </div>
 
   <div class="card"><h4>数据</h4>
@@ -1013,6 +1039,7 @@ function renderSettings() {
   q("#y_now").onclick = () => syncNow(false);
   q("#b_prompt").onclick = async () => toast(await copyText(SYS) ? "已复制，去 claude.ai 建项目粘进指令栏" : "复制失败");
   q("#b_lib").onclick = showLib;
+  q("#b_ro").onclick = routineSheet;
   q("#b_csv").onclick = exportCSV;
   q("#b_wcsv").onclick = exportWorkoutCSV;
   q("#b_json").onclick = exportJSON;
@@ -1037,7 +1064,7 @@ function merge(local, remote) {
   out.tomb = Object.assign({}, local.tomb || {});
   for (const k in (remote.tomb || {})) if (!(k in out.tomb) || remote.tomb[k] > out.tomb[k]) out.tomb[k] = remote.tomb[k];
 
-  for (const field of ["entries", "workouts", "plans"]) {
+  for (const field of ["entries", "workouts", "plans", "routines"]) {
     const all = {};
     for (const x of (local[field] || [])) all[x.id] = x;
     for (const x of (remote[field] || [])) {
@@ -1084,10 +1111,10 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 4, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 5, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
-    plans: S.plans, activePlan: S.activePlan
+    plans: S.plans, activePlan: S.activePlan, routines: S.routines
   };
 }
 function dot(cls) {
@@ -1155,8 +1182,13 @@ function queueSync() {
 }
 
 /* ---------------- 食物库 ---------------- */
-const LIB_HEAD = "食物名称,每100g碳水,每100g蛋白,每100g脂肪";
-const LIB_TPL = LIB_HEAD + "\n鸡胸肉,0,23.1,1.9\n白米饭,25.9,2.6,0.3\n全麦面包,43.3,13.4,4.2";
+/* 一份 = 固体 100 g / 液体 250 ml，营养值都按一份填 */
+const LIB_HEAD = "食物名称,单位,每份碳水,每份蛋白,每份脂肪";
+const LIB_TPL = LIB_HEAD +
+  "\n燕麦片,g,66.3,13.5,6.9" +
+  "\n鸡蛋,g,1.1,12.6,9.5" +
+  "\n椰子奶,ml,4.5,1.3,11.5" +
+  "\n牛奶,ml,12,8.2,9";
 
 /* 删一条要写墓碑，否则下次同步会被远端捞回来 */
 function dropLib(name) {
@@ -1165,7 +1197,7 @@ function dropLib(name) {
 }
 function showLib() {
   const names = Object.keys(S.lib).sort();
-  let h = `<h3>食物库</h3><div class="sh-sub">${names.length} 条 · 每 100 g 的碳水 / 蛋白 / 脂肪，点 × 删除</div>
+  let h = `<h3>食物库</h3><div class="sh-sub">${names.length} 条 · 每份（固体 100 g / 液体 250 ml）的碳水 / 蛋白 / 脂肪，点 × 删除</div>
     <div class="btnrow" style="margin-top:0">
       <button id="lb_imp">导入 / 模板</button>
       <button id="lb_exp"${names.length ? "" : " disabled"}>导出 CSV</button>
@@ -1176,6 +1208,7 @@ function showLib() {
     const v = S.lib[n];
     h += `<div class="item"><div class="it1">
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n)}</span>
+      <span style="font-family:var(--mono);font-size:10.5px;color:var(--ink-faint)">/${baseOf(v.u)}${v.u || "g"}</span>
       <span style="font-family:var(--mono);font-size:11.5px;color:var(--ink-mute)">${r1(v.c)} · ${r1(v.p)} · ${r1(v.f)}</span>
       <button class="drop" data-lib="${esc(n)}">×</button></div></div>`;
   }
@@ -1205,7 +1238,7 @@ function showLib() {
 function exportLib() {
   const rows = Object.keys(S.lib).sort().map(n => {
     const v = S.lib[n];
-    return ['"' + n.replace(/"/g, '""') + '"', r1(v.c), r1(v.p), r1(v.f)].join(",");
+    return ['"' + n.replace(/"/g, '""') + '"', v.u || "g", r1(v.c), r1(v.p), r1(v.f)].join(",");
   }).join("\n");
   download("macros_foodlib_" + todayKey() + ".csv", "\ufeff" + LIB_HEAD + "\n" + rows, "text/csv");
 }
@@ -1227,52 +1260,196 @@ function parseCSV(text) {
   if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
   return rows;
 }
-function importLibText(text) {
+/* overwrite=false 时，库里已有的同名食物一律跳过，不动它的数值 */
+function importLibText(text, overwrite) {
   const now = Date.now();
-  let n = 0, bad = 0;
+  let add = 0, upd = 0, skip = 0, bad = 0;
   for (const r of parseCSV(text)) {
     if (!r.join("").trim()) continue;                     // 空行
     const name = (r[0] || "").trim();
     if (!name || name === "食物名称") continue;            // 表头
-    if (r.length < 4) { bad++; continue; }
-    const c = parseFloat(r[1]), p = parseFloat(r[2]), f = parseFloat(r[3]);
-    if (!isFinite(c) || !isFinite(p) || !isFinite(f) || c < 0 || p < 0 || f < 0 || c + p + f > 100.5) { bad++; continue; }
-    S.lib[name] = { c, p, f, ts: now };
+    // 五列是带单位的新格式，四列是老格式（一律当固体）
+    const hasU = r.length >= 5 && !isFinite(parseFloat(r[1]));
+    const u = hasU ? ((r[1] || "").trim().toLowerCase() === "ml" ? "ml" : "g") : "g";
+    const o = hasU ? 2 : 1;
+    if (r.length < o + 3) { bad++; continue; }
+    const c = parseFloat(r[o]), p = parseFloat(r[o + 1]), f = parseFloat(r[o + 2]);
+    const cap = baseOf(u) * 1.005;                        // 一份里装不下超过一份重量的营养素
+    if (!isFinite(c) || !isFinite(p) || !isFinite(f) || c < 0 || p < 0 || f < 0 || c + p + f > cap) { bad++; continue; }
+    const had = !!S.lib[name];
+    if (had && !overwrite) { skip++; continue; }
+    S.lib[name] = { c, p, f, u, ts: now };
     delete S.libTomb[name];                               // 重新加回来的要撤墓碑
-    n++;
+    had ? upd++ : add++;
   }
-  if (!n) { toast(bad ? "没有一行能用 · 检查是不是「名称,碳水,蛋白,脂肪」四列" : "没解析出食物"); return false; }
+  const n = add + upd;
+  if (!n && !skip) { toast(bad ? "没有一行能用 · 检查是不是「名称,单位,碳水,蛋白,脂肪」" : "没解析出食物"); return false; }
   save(); queueSync();
-  toast("已导入 " + n + " 条" + (bad ? " · " + bad + " 行无效已跳过" : ""));
+  const bits = [];
+  if (add) bits.push("新增 " + add);
+  if (upd) bits.push("更新 " + upd);
+  if (skip) bits.push("跳过已有 " + skip);
+  if (bad) bits.push(bad + " 行无效");
+  toast("导入完成 · " + bits.join(" · "));
   return true;
 }
 function libImportSheet() {
   openSheet(`<h3>导入食物库</h3>
-    <div class="sh-sub">一行一个食物：名称,碳水,蛋白,脂肪 · 三个数值都是<b>每 100 g</b> 的克数</div>
-    <div class="step"><b>1</b><div>拿模板：复制下面的文字，或下载 CSV 用表格软件填
+    <div class="sh-sub">一行一个食物：名称,单位,碳水,蛋白,脂肪</div>
+    <div class="step"><b>1</b><div>营养值按「一份」填：固体单位写 <b>g</b>，一份 = <b>100 g</b>；
+      液体单位写 <b>ml</b>，一份 = <b>250 ml</b>。模板里的数值只是示例，换成你包装上的。
       <div class="btnrow"><button id="li_copy">复制模板</button><button id="li_dl">下载 CSV 模板</button></div></div></div>
     <div class="step"><b>2</b><div>填好后整段粘回这里，表头那行留着
       <textarea id="li_txt" spellcheck="false">${esc(LIB_TPL)}</textarea></div></div>
-    <div class="step"><b>3</b><div>同名会覆盖，其余保留。也可以直接选文件导入
+    <div class="step"><b>3</b><div>也可以直接选文件导入。老的四列格式（没有单位列）仍然认，按固体处理
       <div class="btnrow"><button id="li_file">从文件导入…</button></div></div></div>
+    <div class="fld" style="border-bottom:none">
+      <label>覆盖同名食物<small>关掉的话，库里已经有的一律跳过，数值不动</small></label>
+      <button class="tog on" id="li_ow">✓</button>
+    </div>
     <div class="sheetact">
       <button class="ghost" id="li_cancel">返回</button>
       <button class="go" id="li_go">导入</button></div>`);
   const g = id => document.getElementById(id);
+  g("li_ow").onclick = () => g("li_ow").classList.toggle("on");
   g("li_copy").onclick = async () => toast(await copyText(LIB_TPL) ? "已复制模板" : "复制失败");
   g("li_dl").onclick = () => download("macros_foodlib_template.csv", "\ufeff" + LIB_TPL, "text/csv");
   g("li_cancel").onclick = showLib;
-  g("li_go").onclick = () => { if (importLibText(g("li_txt").value)) showLib(); };
+  g("li_go").onclick = () => { if (importLibText(g("li_txt").value, g("li_ow").classList.contains("on"))) showLib(); };
   g("li_file").onclick = () => {
     const inp = document.createElement("input");
     inp.type = "file"; inp.accept = ".csv,.txt,text/csv,text/plain";
+    const ow = g("li_ow").classList.contains("on");
     inp.onchange = () => {
       const f = inp.files[0]; if (!f) return;
       const rd = new FileReader();
-      rd.onload = () => { if (importLibText(rd.result)) showLib(); };
+      rd.onload = () => { if (importLibText(rd.result, ow)) showLib(); };
       rd.readAsText(f);
     };
     inp.click();
+  };
+}
+
+/* ---------------- 常规摄入 ----------------
+   一组固定搭配（早餐 = 40g 燕麦 + 250ml 椰子奶 + 100g 鸡蛋），
+   一键铺成待确认清单。分量单位跟着食物库里那条走，不单独存。 */
+function routineItems(r) {
+  const out = [], miss = [];
+  for (const it of (r.items || [])) {
+    if (!S.lib[it.name]) { miss.push(it.name); continue; }
+    out.push(libItem(it.name, it.q, "库"));
+  }
+  return { out, miss };
+}
+function routineSum(r) {
+  const t = { c: 0, p: 0, f: 0 };
+  for (const it of routineItems(r).out) {
+    const k = it.qty / it.base;
+    t.c += it.cb * k; t.p += it.pb * k; t.f += it.fb * k;
+  }
+  return t.c * KCAL.c + t.p * KCAL.p + t.f * KCAL.f;
+}
+function applyRoutine(id) {
+  const r = S.routines.find(x => x.id === id); if (!r) return;
+  const { out, miss } = routineItems(r);
+  if (!out.length) { toast("这组里的食物都不在食物库里，先把它们加进去"); return; }
+  meal = r.meal || meal;
+  renderComposer();
+  review(out);
+  if (miss.length) toast("跳过了不在食物库里的：" + miss.join("、"));
+}
+function routineSheet() {
+  let h = `<h3>常规摄入</h3>
+    <div class="sh-sub">把每天固定吃的存成一组，之后一键铺开确认即可</div>`;
+  if (!S.routines.length) h += `<div class="dayempty" style="text-align:center;padding:14px 0">还没有常规搭配<br>比如「早餐 = 40g 燕麦 + 250ml 椰子奶 + 100g 鸡蛋」</div>`;
+  for (const r of S.routines) {
+    const { out, miss } = routineItems(r);
+    const desc = (r.items || []).map(x => x.q + unitOf(x.name) + " " + x.name).join(" + ");
+    h += `<div class="item"><div class="it1">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>
+      <span class="conf">${esc(r.meal || MEALS[0])}</span>
+      <button class="drop" data-redit="${r.id}">›</button></div>
+      <div class="it2" style="display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(desc) || "空"}</div>
+      <div class="it2" style="margin-top:5px">
+        <span>${out.length} 项${miss.length ? " · " + miss.length + " 项不在库里" : ""}</span>
+        <span>${nf(routineSum(r))} kcal</span></div>
+      <div class="btnrow"><button class="pri" data-ruse="${r.id}">记入${esc(r.meal || MEALS[0])}</button></div></div>`;
+  }
+  h += `<div class="sheetact">
+      <button class="ghost" id="ro_new">新建一组</button>
+      <button class="go" id="ro_done">完成</button></div>`;
+  openSheet(h);
+  document.querySelectorAll("[data-ruse]").forEach(b => b.onclick = () => applyRoutine(b.dataset.ruse));
+  document.querySelectorAll("[data-redit]").forEach(b => b.onclick = () => {
+    const r = S.routines.find(x => x.id === b.dataset.redit);
+    draft = JSON.parse(JSON.stringify(r)); routineEditSheet();
+  });
+  document.getElementById("ro_new").onclick = () => {
+    draft = { id: newId(), name: "早餐", meal: MEALS[0], items: [], ts: Date.now() };
+    routineEditSheet();
+  };
+  document.getElementById("ro_done").onclick = () => { closeSheet(); render(); };
+}
+function routineEditSheet() {
+  if (!draft) return routineSheet();
+  const exists = S.routines.some(x => x.id === draft.id);
+  const names = Object.keys(S.lib).sort();
+  let h = `<h3>${exists ? "编辑常规搭配" : "新建常规搭配"}</h3>
+    <div class="sh-sub">分量的单位跟着食物库里那条走，固体 g / 液体 ml</div>
+    <div class="frow">
+      <div class="fcell text" style="flex:2"><label>名称</label>
+        <input id="ro_name" value="${esc(draft.name)}" placeholder="早餐"></div>
+      <div class="fcell" style="flex:1"><label>记入</label>
+        <select id="ro_meal">${MEALS.map(m => `<option value="${m}"${draft.meal === m ? " selected" : ""}>${m}</option>`).join("")}</select></div>
+    </div><div class="daylist">`;
+  draft.items.forEach((it, i) => {
+    const has = !!S.lib[it.name];
+    h += `<div class="item"><div class="it1">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${has ? "" : ";color:var(--over)"}">${esc(it.name)}${has ? "" : " · 不在库里"}</span>
+      <span class="gwrap"><input class="gm" data-rq="${i}" type="number" inputmode="decimal" value="${it.q || ""}"><em>${unitOf(it.name)}</em></span>
+      <button class="drop" data-rx="${i}">×</button></div></div>`;
+  });
+  if (!draft.items.length) h += `<div class="dayempty" style="text-align:center;padding:12px 0">从下面的食物库里点着加</div>`;
+  h += `</div>`;
+  if (names.length) h += `<div class="subhead">食物库</div><div class="chips" style="margin-bottom:8px">${
+    names.map(n => `<button class="chip" data-radd="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
+  else h += `<div class="dayempty">食物库是空的，先去「设置 → 管理食物库」加几条</div>`;
+  h += `<div class="sheetact">
+      ${exists ? `<button class="danger" id="ro_del">删除</button>` : ""}
+      <button class="ghost" id="ro_back">返回</button>
+      <button class="go" id="ro_save">保存</button></div>`;
+  openSheet(h);
+  const g = id => document.getElementById(id);
+  // 不在这里过滤空行，否则删除按钮的下标会跟渲染时错位
+  const grab = () => {
+    draft.name = g("ro_name").value.trim() || "常规搭配";
+    draft.meal = g("ro_meal").value;
+    document.querySelectorAll("[data-rq]").forEach(el => {
+      const v = parseFloat(el.value);
+      draft.items[+el.dataset.rq].q = isFinite(v) && v > 0 ? v : 0;
+    });
+  };
+  document.querySelectorAll("[data-radd]").forEach(b => b.onclick = () => {
+    grab();
+    const n = b.dataset.radd;
+    if (!draft.items.some(x => x.name === n)) draft.items.push({ name: n, q: baseOf(unitOf(n)) });
+    routineEditSheet();
+  });
+  document.querySelectorAll("[data-rx]").forEach(b => b.onclick = () => { grab(); draft.items.splice(+b.dataset.rx, 1); routineEditSheet(); });
+  if (exists) g("ro_del").onclick = () => {
+    removeRec("routines", draft.id); draft = null; routineSheet(); render();
+  };
+  g("ro_back").onclick = routineSheet;
+  g("ro_save").onclick = () => {
+    grab();
+    draft.items = draft.items.filter(x => x.name && x.q > 0);
+    if (!draft.items.length) { toast("至少加一样食物"); return; }
+    draft.ts = Date.now();
+    const i = S.routines.findIndex(x => x.id === draft.id);
+    if (i < 0) S.routines.push(draft); else S.routines[i] = draft;
+    save(); queueSync();
+    toast("已保存 " + draft.name);
+    draft = null; routineSheet(); render();
   };
 }
 
@@ -1294,14 +1471,19 @@ function quickParse(text) {
   const m = text.match(/^\s*(.+?)\s*(\d+(?:\.\d+)?)\s*(?:g|克|ml|毫升)?\s*$/i)
         || text.match(/^\s*(\d+(?:\.\d+)?)\s*(?:g|克|ml|毫升)\s*(.+?)\s*$/i);
   if (!m) return null;
-  let name, grams;
-  if (isNaN(parseFloat(m[1]))) { name = m[1].trim(); grams = parseFloat(m[2]); }
-  else { grams = parseFloat(m[1]); name = m[2].trim(); }
+  let name, qty;
+  if (isNaN(parseFloat(m[1]))) { name = m[1].trim(); qty = parseFloat(m[2]); }
+  else { qty = parseFloat(m[1]); name = m[2].trim(); }
   const keys = Object.keys(S.lib);
   const hit = keys.find(k => k === name) || keys.find(k => k.includes(name) || name.includes(k));
   if (!hit) return null;
   const v = S.lib[hit];
-  return { name: hit, grams, c100: v.c, p100: v.p, f100: v.f, conf: "库", note: "" };
+  return libItem(hit, qty, "库");
+}
+/* 食物库里的一条 → 确认清单用的条目；单位和一份的大小都跟着库走 */
+function libItem(name, qty, conf) {
+  const v = S.lib[name], u = v.u || "g";
+  return { name, qty, u, base: baseOf(u), cb: v.c, pb: v.p, fb: v.f, conf: conf || "库", note: "" };
 }
 
 /* 把 Claude 返回的 JSON 文本解析成条目数组；解析不出来返回 null */
@@ -1312,15 +1494,22 @@ function parseItems(text) {
   let parsed;
   try { parsed = JSON.parse(clean.slice(a, b + 1)); } catch (e) { return null; }
   if (!parsed || !Array.isArray(parsed.items)) return null;
-  const items = parsed.items.map(it => ({
-    name: String(it.name || "未知食物"),
-    grams: Math.max(0, Number(it.grams) || 0),
-    c100: Math.max(0, Number(it.carbs_100g) || 0),
-    p100: Math.max(0, Number(it.protein_100g) || 0),
-    f100: Math.max(0, Number(it.fat_100g) || 0),
-    conf: it.confidence || "medium",
-    note: String(it.note || "")
-  })).filter(x => x.grams > 0);
+  // Claude 给的是每 100 g 或每 100 ml；液体换算成每 250 ml 存
+  // amount/unit 是新字段，老提示词只有 grams，缺省当固体，照旧能用
+  const items = parsed.items.map(it => {
+    const u = (it.unit === "ml" || it.unit === "毫升") ? "ml" : "g";
+    const k = baseOf(u) / 100;
+    return {
+      name: String(it.name || "未知食物"),
+      qty: Math.max(0, Number(it.amount != null ? it.amount : it.grams) || 0),
+      u, base: baseOf(u),
+      cb: Math.max(0, Number(it.carbs_100g) || 0) * k,
+      pb: Math.max(0, Number(it.protein_100g) || 0) * k,
+      fb: Math.max(0, Number(it.fat_100g) || 0) * k,
+      conf: it.confidence || "medium",
+      note: String(it.note || "")
+    };
+  }).filter(x => x.qty > 0);
   return items.length ? items : null;
 }
 
@@ -1337,7 +1526,7 @@ function pasteSheet(text) {
       还没建过？先到「设置 → 营养查询 → 复制项目指令」。
       <div class="btnrow"><button id="p_copyp">复制项目指令</button></div></div></div>
     <div class="step"><b>3</b><div>把返回的 JSON 整段粘到这里
-      <textarea id="p_json" placeholder='{"items":[{"name":"鸡胸肉","grams":150,...}]}'></textarea></div></div>
+      <textarea id="p_json" placeholder='{"items":[{"name":"鸡胸肉","amount":150,"unit":"g",...}]}'></textarea></div></div>
     <div class="sheetact">
       <button class="ghost" id="p_cancel">取消</button>
       <button class="go" id="p_go">解析</button></div>`);
@@ -1356,9 +1545,10 @@ const SYS = `你是营养数据助手。用户用中文或英文描述吃了什�
 
 规则：
 1. 只输出一个 JSON 对象，不要任何解释文字，不要 markdown 代码围栏。
-2. 格式：{"items":[{"name":"食物名","grams":分量数字,"carbs_100g":数字,"protein_100g":数字,"fat_100g":数字,"confidence":"high|medium|low","note":"简短说明或空字符串"}]}
+2. 格式：{"items":[{"name":"食物名","amount":分量数字,"unit":"g|ml","carbs_100g":数字,"protein_100g":数字,"fat_100g":数字,"confidence":"high|medium|low","note":"简短说明或空字符串"}]}
 3. carbs_100g / protein_100g / fat_100g 是该食物每 100 克(或每 100 毫升液体)的克数。
-4. grams 是用户实际摄入的总克数。遇到「一碗」「一个」「一份」等模糊量词，按常见份量估算并在 note 里注明假设，confidence 设为 medium 或 low。参考：一碗米饭≈250g，一个鸡蛋≈50g，一片吐司≈35g，一杯牛奶≈240ml，一份炒菜≈200g。
+4. unit：固体食物填 "g"，液体（奶、饮料、汤、油等按体积计的）填 "ml"。
+5. amount 是用户实际摄入的总量，单位就是上面的 unit。遇到「一碗」「一个」「一份」等模糊量词，按常见份量估算并在 note 里注明假设，confidence 设为 medium 或 low。参考：一碗米饭≈250g，一个鸡蛋≈50g，一片吐司≈35g，一杯牛奶≈240ml，一份炒菜≈200g。
 5. name 用简洁通用的中文名，标注关键状态，如「白米饭(熟)」「鸡胸肉(生)」。同一食物名称保持一致，便于建立食物库。
 6. 熟食按熟重给营养值；如果用户说的是生重就按生重。
 7. 复合菜肴(如宫保鸡丁)整体给一条，按整道菜每 100g 的平均值估算，confidence 设为 low。
@@ -1380,29 +1570,29 @@ function drawItems() {
   const box = document.getElementById("items");
   if (!box) return;
   box.innerHTML = pending.map((it, i) => {
-    const k = it.grams / 100;
+    const k = it.qty / it.base;
     const lab = it.conf === "库" ? "库" : ({ high: "高", medium: "中", low: "估" }[it.conf] || "中");
     return `<div class="item">
       <div class="it1"><input class="nm" data-i="${i}" value="${esc(it.name)}">
         <span class="conf ${it.conf === "low" ? "low" : ""}">${lab}</span>
-        <span class="gwrap"><input class="gm" data-g="${i}" type="number" inputmode="decimal" value="${r0(it.grams)}"><em>g</em></span>
+        <span class="gwrap"><input class="gm" data-g="${i}" type="number" inputmode="decimal" value="${r0(it.qty)}"><em>${it.u}</em></span>
         <button class="drop" data-x="${i}">×</button></div>
       <div class="it2">
-        <span style="color:var(--carb)">碳 ${r1(it.c100 * k)}</span>
-        <span style="color:var(--prot)">蛋 ${r1(it.p100 * k)}</span>
-        <span style="color:var(--fat)">脂 ${r1(it.f100 * k)}</span>
-        <span>${r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k)} kcal</span></div>
+        <span style="color:var(--carb)">碳 ${r1(it.cb * k)}</span>
+        <span style="color:var(--prot)">蛋 ${r1(it.pb * k)}</span>
+        <span style="color:var(--fat)">脂 ${r1(it.fb * k)}</span>
+        <span>${r0((it.cb * 4 + it.pb * 4 + it.fb * 9) * k)} kcal</span></div>
       ${it.note ? `<div class="it2" style="margin-top:5px;color:var(--ink-faint);font-family:var(--sans)">${esc(it.note)}</div>` : ""}
     </div>`;
   }).join("");
   box.querySelectorAll("[data-g]").forEach(el => el.oninput = () => {
     const i = +el.dataset.g, it = pending[i];
-    it.grams = Math.max(0, parseFloat(el.value) || 0);
-    const k = it.grams / 100, line = el.closest(".item").querySelectorAll(".it2")[0].children;
-    line[0].textContent = "碳 " + r1(it.c100 * k);
-    line[1].textContent = "蛋 " + r1(it.p100 * k);
-    line[2].textContent = "脂 " + r1(it.f100 * k);
-    line[3].textContent = r0((it.c100 * 4 + it.p100 * 4 + it.f100 * 9) * k) + " kcal";
+    it.qty = Math.max(0, parseFloat(el.value) || 0);
+    const k = it.qty / it.base, line = el.closest(".item").querySelectorAll(".it2")[0].children;
+    line[0].textContent = "碳 " + r1(it.cb * k);
+    line[1].textContent = "蛋 " + r1(it.pb * k);
+    line[2].textContent = "脂 " + r1(it.fb * k);
+    line[3].textContent = r0((it.cb * 4 + it.pb * 4 + it.fb * 9) * k) + " kcal";
   });
   box.querySelectorAll("[data-i]").forEach(el => el.oninput = () => pending[+el.dataset.i].name = el.value);
   box.querySelectorAll("[data-x]").forEach(el => el.onclick = () => {
@@ -1414,13 +1604,14 @@ function drawItems() {
 function commit() {
   const now = Date.now();
   for (const it of pending) {
-    if (it.grams <= 0) continue;
-    const k = it.grams / 100;
+    if (it.qty <= 0) continue;
+    const k = it.qty / it.base;
     S.entries.push({
-      id: newId(), date: cursor, meal, name: it.name, g: it.grams,
-      c: it.c100 * k, p: it.p100 * k, f: it.f100 * k, ts: now
+      id: newId(), date: cursor, meal, name: it.name, g: it.qty, u: it.u,
+      c: it.cb * k, p: it.pb * k, f: it.fb * k, ts: now
     });
-    S.lib[it.name] = { c: it.c100, p: it.p100, f: it.f100, ts: now };
+    S.lib[it.name] = { c: it.cb, p: it.pb, f: it.fb, u: it.u, ts: now };
+    delete S.libTomb[it.name];
   }
   touchSettings(); save(); closeSheet();
   const inp = document.getElementById("inp");
@@ -1437,7 +1628,9 @@ function manualSheet(rec) {
       } · 直接填三大营养素的克数，看包装营养表时最快</div>
     <div class="frow"><div class="fcell text" style="flex:2">
         <label>名称</label><input id="m_name" value="${esc(e.name)}" placeholder="手动记录"></div>
-      <div class="fcell"><label>分量 G</label><input id="m_g" type="number" inputmode="decimal" value="${e.g || ""}" placeholder="选填"></div></div>
+      <div class="fcell"><label>分量</label><input id="m_g" type="number" inputmode="decimal" value="${e.g || ""}" placeholder="选填"></div>
+      <div class="fcell" style="flex:0 0 66px"><label>单位</label>
+        <select id="m_u">${UNITS.map(x => `<option value="${x}"${(e.u || "g") === x ? " selected" : ""}>${x}</option>`).join("")}</select></div></div>
     <div class="frow">
       <div class="fcell"><label style="color:var(--carb)">碳水 G</label><input id="m_c" type="number" inputmode="decimal" value="${e.c === "" ? "" : r1(e.c)}" placeholder="0"></div>
       <div class="fcell"><label style="color:var(--prot)">蛋白 G</label><input id="m_p" type="number" inputmode="decimal" value="${e.p === "" ? "" : r1(e.p)}" placeholder="0"></div>
@@ -1455,31 +1648,34 @@ function manualSheet(rec) {
 
   const g = id => document.getElementById(id);
   const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
-  /* 库里存的是每 100g，所以必须有名字和分量才能换算 */
-  const per100 = () => {
-    const name = g("m_name").value.trim(), gram = num("m_g");
-    if (!name || name === "手动记录" || !gram) return null;
-    return { name, c: num("m_c") / gram * 100, p: num("m_p") / gram * 100, f: num("m_f") / gram * 100 };
+  /* 库里按「一份」存（固体 100 g / 液体 250 ml），必须有名字和分量才能换算 */
+  const perBase = () => {
+    const name = g("m_name").value.trim(), q = num("m_g"), u = g("m_u").value;
+    if (!name || name === "手动记录" || !q) return null;
+    const k = baseOf(u) / q;
+    return { name, u, base: baseOf(u), c: num("m_c") * k, p: num("m_p") * k, f: num("m_f") * k };
   };
   const refresh = () => {
     const k = num("m_c") * 4 + num("m_p") * 4 + num("m_f") * 9;
     g("m_kcal").innerHTML = `合计 <b>${r0(k)}</b> kcal`;
-    const v = per100(), tog = g("m_lib");
+    const v = perBase(), tog = g("m_lib");
     tog.disabled = !v;
     g("m_hint").textContent = v
-      ? `每 100g ${r1(v.c)} / ${r1(v.p)} / ${r1(v.f)} · 下次输入「${v.name} 150」直接命中`
-      : "要填名称和分量才能换算成每 100g";
+      ? `每 ${v.base} ${v.u} = ${r1(v.c)} / ${r1(v.p)} / ${r1(v.f)} · 下次输入「${v.name} ${v.base}」直接命中`
+      : "要填名称和分量才能换算成每份";
   };
   ["m_c", "m_p", "m_f", "m_name"].forEach(id => g(id).oninput = refresh);
-  // 若名称在食物库里，改分量会自动按每 100g 换算
+  // 若名称在食物库里，改分量会按该食物的一份自动换算，单位也以库里的为准
   g("m_g").oninput = () => {
     const hit = S.lib[g("m_name").value.trim()];
     if (hit) {
-      const k = num("m_g") / 100;
+      if (hit.u) g("m_u").value = hit.u;
+      const k = num("m_g") / baseOf(hit.u);
       g("m_c").value = r1(hit.c * k); g("m_p").value = r1(hit.p * k); g("m_f").value = r1(hit.f * k);
     }
     refresh();
   };
+  g("m_u").onchange = refresh;
   g("m_lib").onclick = () => g("m_lib").classList.toggle("on");
   refresh();
   g("m_cancel").onclick = closeSheet;
@@ -1487,13 +1683,13 @@ function manualSheet(rec) {
   g("m_save").onclick = () => {
     const c = num("m_c"), p = num("m_p"), f = num("m_f");
     if (!c && !p && !f) { toast("三个克数至少填一个"); return; }
-    const body = { name: g("m_name").value.trim() || "手动记录", g: num("m_g"), c, p, f, ts: Date.now() };
+    const body = { name: g("m_name").value.trim() || "手动记录", g: num("m_g"), u: g("m_u").value, c, p, f, ts: Date.now() };
     if (isEdit) Object.assign(rec, body);
     else S.entries.push(Object.assign({ id: newId(), date: cursor, meal }, body));
     // 存进食物库 = 顺带同步上去，syncPayload 里本来就带 lib
-    const v = g("m_lib").classList.contains("on") ? per100() : null;
+    const v = g("m_lib").classList.contains("on") ? perBase() : null;
     if (v) {
-      S.lib[v.name] = { c: v.c, p: v.p, f: v.f, ts: Date.now() };
+      S.lib[v.name] = { c: v.c, p: v.p, f: v.f, u: v.u, ts: Date.now() };
       delete S.libTomb[v.name];
     }
     save(); closeSheet();
@@ -1513,10 +1709,10 @@ function download(name, text, type) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
 }
 function exportCSV() {
-  const head = "日期,餐次,食物,分量g,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,体重kg\n";
+  const head = "日期,餐次,食物,分量,单位,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,体重kg\n";
   const rows = S.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(e => {
     const t = targets(e.date);
-    return [e.date, e.meal, '"' + e.name.replace(/"/g, '""') + '"', r1(e.g), r1(e.c), r1(e.p), r1(e.f),
+    return [e.date, e.meal, '"' + e.name.replace(/"/g, '""') + '"', r1(e.g), e.u || "g", r1(e.c), r1(e.p), r1(e.f),
       r0(e.c * 4 + e.p * 4 + e.f * 9), r1(t.c), r1(t.p), r1(t.f), r1(t.w)].join(",");
   }).join("\n");
   download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");

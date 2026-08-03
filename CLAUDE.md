@@ -51,7 +51,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `.chips` 本来就是横向滚动的，它「溢出」是设计如此，不是 bug。
 - 截图用 `--screenshot=<path>`；图片会按 `--window-size` 裁剪而不是缩放，所以窄图会**假装**成内容被切掉，别被骗。
 
-最近一次全量验证：84 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
+最近一次全量验证：114 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、v4→v5 迁移不动老数据、常规摄入。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
 
 ## 设计约束（改代码前先读）
 
@@ -70,7 +70,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 | 段落 | 职责 |
 |---|---|
-| 常量 | `KCAL` 换算系数、餐次、星期、内置分化预设 |
+| 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、内置分化预设 |
 | `state` | `blank()` / `migrate()` / `load()` / `save()` |
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
 | `computed` | `weightOn()` / `targets()` / `eatenOn()` / `exOn()` / `volOf()` |
@@ -84,6 +84,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
 | `Gist sync` | GitHub API 封装、创建 gist、`syncNow()`、`queueSync()` |
+| `常规摄入` | `routineItems/applyRoutine/routineSheet/routineEditSheet` |
 | `食物库` | `showLib()` / `dropLib()` / `exportLib()` / `parseCSV()` / `importLibText()` / `libImportSheet()` |
 | `sheet` | 底部弹层的开关 |
 | `饮食录入` | `submit()` / `quickParse()` / `SYS` 提示词 |
@@ -100,27 +101,29 @@ let cursor  // 今日页当前日期 "YYYY-MM-DD"
 let wkCursor// 训练页当前周的周一
 let meal    // 当前选中餐次
 let pending // review sheet 里待确认的条目数组
-let draft   // 正在编辑的分化副本，保存前不碰 S.plans
+let draft   // 正在编辑的分化 / 常规搭配副本，保存前不碰 S.plans / S.routines
 let trendEx // 进展曲线当前选中的动作名
 ```
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 4`）
+### 数据模型（`S`，schema `v: 5`）
 
 ```js
 {
-  v: 4,
+  v: 5,
   weight: 70,                    // 兜底体重，只在 weights 为空时用
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
 
-  entries: [{ id, date, meal, name, g, c, p, f, ts }],
-              // c/p/f 是这一条的绝对克数（不是每 100g）
+  entries: [{ id, date, meal, name, g, u, c, p, f, ts }],
+              // g 是分量数值，u 是它的单位（"g" / "ml"）
+              // c/p/f 是这一条的绝对克数（不是每份）
   workouts: [{ id, date, name, sets, reps, wt, dur, note, ts }],
               // 用不到的字段存 0 / ""；容量 = sets*reps*wt
   weights:  { "2026-07-31": { v: 72.5, ts } },
-  lib:      { "鸡胸肉": { c: 0, p: 23.1, f: 1.9, ts } },   // 每 100g
+  lib:      { "鸡胸肉":  { c: 0,   p: 23.1, f: 1.9,  u: "g",  ts },   // 每 100 g
+              "椰子奶":  { c: 4.5, p: 1.3,  f: 11.5, u: "ml", ts } }, // 每 250 ml
   tomb:     { "<被删记录的 id>": ts },                      // 墓碑，120 天后清理
   libTomb:  { "鸡胸肉": ts },                               // 食物库的墓碑，同上
 
@@ -128,6 +131,9 @@ let trendEx // 进展曲线当前选中的动作名
     days: [ { name: "推", items: [{ name, sets, reps, wt }] }, … ]  // 恒为 7 项，周一..周日
   }],                            // items 为空 = 休息日
   activePlan: "<plan id>",       // 当前生效的分化，跟设置一起 LWW
+
+  routines: [{ id, name, meal, ts,
+    items: [{ name, q }] }],     // 常规搭配；q 的单位取 lib 里那条的 u，不单独存
 
   sync: { token, gistId, last }  // ← 仅本机，不进 syncPayload()
 }
@@ -137,6 +143,16 @@ let trendEx // 进展曲线当前选中的动作名
 - 目标 = **当日体重** × 系数。`weightOn(date)` 取 `<= date` 的最近一条体重，所以改历史体重会改历史目标。
 - 热量 = `c*4 + p*4 + f*9`（`KCAL` 常量）。
 - 训练容量 = `sets × reps × wt`，任一为 0 则为 0。
+
+### 单位：一份 = 100 g 或 250 ml
+
+食物库不按「每 100」存，按**一份**存，`baseOf(u)` 给出一份多大：固体 `g` → 100，液体 `ml` → 250。所以所有换算都是 `qty / base`，**不要再写死 `/100`**。
+
+- `S.lib` 里每条带 `u`；老数据没有这个字段，`migrate()` 一律补成 `"g"`，数值一个不动 —— 升级前后固体食物的行为完全一样。
+- 确认清单里的条目字段是 `{ name, qty, u, base, cb, pb, fb }`（`cb/pb/fb` = 每份的克数）。曾经叫 `grams/c100/p100/f100`，跟着单位一起改了名，别再按老名字找。
+- `libItem(name, qty)` 是从食物库造这种条目的唯一入口，单位和 base 都跟着库走，新代码用它就不会算错。
+- Claude 返回的 JSON 仍然是**每 100 g / 每 100 ml**（对模型更自然），`parseItems()` 在读进来时给液体乘 2.5 折算成每 250 ml。`amount`+`unit` 是新字段，老提示词只有 `grams` 也照样能用。
+- 一份里装不下超过一份重量的营养素，所以导入的上限是 `baseOf(u) * 1.005`，液体那条自然放宽到 251.25。
 
 ### 同步协议
 
@@ -152,7 +168,7 @@ let trendEx // 进展曲线当前选中的动作名
 
 | 字段 | 策略 |
 |---|---|
-| `entries` / `workouts` / `plans` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
+| `entries` / `workouts` / `plans` / `routines` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
 | `weights` / `lib` | 按 key 逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
 | `tomb` / `libTomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 | 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
@@ -167,30 +183,42 @@ let trendEx // 进展曲线当前选中的动作名
 2. **粘贴 JSON**：库里没有的食物，在 claude.ai 用 `SYS`（设置页可一键复制）建的项目里查，把返回的 JSON 粘回输入框 → 应走 `pasteSheet()`。
 3. **手动**：点「手动」按钮，直接填三大营养素克数（看包装营养表最快）→ `manualSheet()`。
 
-**三条路径都会把该食物的每 100g 数值写回 `S.lib`**，下次就能走路径 1；`lib` 在 `syncPayload()` 里，所以也就顺带同步到别的设备了。
+**三条路径都会把该食物每一份的数值写回 `S.lib`**，下次就能走路径 1；`lib` 在 `syncPayload()` 里，所以也就顺带同步到别的设备了。
 
-路径 1、2 由 `commit()` 无条件写回。路径 3 多一个开关（`#m_lib`，默认开）：库里存的是每 100 g，所以**必须同时有名称和分量**才能换算，`per100()` 拿不到就返回 null、开关自动禁用并提示原因。像「外卖」这种一次性的记录，把开关关掉就只记饮食不进库。
+路径 1、2 由 `commit()` 无条件写回。路径 3 多一个开关（`#m_lib`，默认开）：库里按一份存，所以**必须同时有名称和分量**才能换算，`perBase()` 拿不到就返回 null、开关自动禁用并提示原因。像「外卖」这种一次性的记录，把开关关掉就只记饮食不进库。手动录入的分量旁边有 g / ml 选择器；名字命中食物库时单位以库里的为准。
 
 `S.lib` 出厂为空 —— 没有任何内置种子食物，全靠你自己录入或导入。
 
 ### 食物库的批量维护
 
-「设置 → 管理食物库」里有导入 / 导出 / 清空。CSV 格式固定四列，数值都是**每 100 g** 的克数：
+「设置 → 管理食物库」里有导入 / 导出 / 清空。CSV 五列，数值按**一份**填：
 
 ```
-食物名称,每100g碳水,每100g蛋白,每100g脂肪
-鸡胸肉,0,23.1,1.9
-"牛肉,瘦",0,22.6,5
+食物名称,单位,每份碳水,每份蛋白,每份脂肪
+鸡胸肉,g,0,23.1,1.9
+椰子奶,ml,4.5,1.3,11.5
+"牛肉,瘦",g,0,22.6,5
 ```
 
 - `parseCSV()` 是手写的，支持引号包裹、`""` 转义、CRLF、开头 BOM。别换成 `split(",")`，食物名里有逗号就废了。
-- `importLibText()` 会跳过表头和空行，拒绝负数以及三者之和 > 100.5 的行（跟 `SYS` 提示词里的第 8 条一个道理），同名覆盖，并**撤掉该名字的墓碑**。
+- **老的四列格式（没有单位列）仍然认**，按固体处理。判断靠「第二列能不能 parseFloat 成数字」：不能就是单位列。
+- `importLibText(text, overwrite)` 会跳过表头和空行，拒绝负数和超过一份重量的行，并**撤掉该名字的墓碑**。`overwrite=false` 时库里已有的同名食物整条跳过，数值不动；导入结束按「新增 / 更新 / 跳过 / 无效」分别报数，不会静默吞掉任何一行。
 - 导入入口同时支持粘贴和选文件 —— 手机上粘贴好用得多，别只留文件选择。
 - 「清空」要点两次（4 秒内），第一次只是把按钮变成「再点一次确认」。
 
 **清空之所以能生效，靠的是 `dropLib()` 写 `libTomb`**，否则下次同步远端会把整库捞回来。别改成裸的 `delete S.lib[name]`。
 
 （曾经还有第二个坑：`migrate()` 里有一段「lib 空了就重新播种内置的 26 条」。`DEFAULT_LIB` 已在 `2026-07-31.6` 整个删掉，那段逻辑也一并没了。不要再加回任何形式的内置种子。）
+
+### 常规摄入（每天固定吃的那几样）
+
+`S.routines` 存搭配，一组 = 名称 + 记入哪一餐 + 若干「食物 + 分量」。应用时 `applyRoutine()` 把它铺成待确认清单走 `review()`，**不直接写库**，所以今天少吃点可以当场改分量。
+
+- 分量的单位不存在 routine 里，`unitOf(name)` 从 `S.lib` 现取 —— 改了食物库的单位，搭配跟着变，不会对不上。
+- 库里没有的食物在编辑器里标红，应用时跳过并 toast 提示，不会静默丢。
+- 从食物库点着加时，默认分量就是一份（固体 100 g / 液体 250 ml），改一下就行。
+- 入口有两个：今日页 composer 顶上的 ⚡ chip 行（只在有搭配时才渲染，没有就不占地方），和「设置 → 常规摄入」。
+- 编辑走 `draft`，跟分化编辑器同一套；`routineEditSheet` 的 `grab()` 同样**不过滤空行**，否则删除按钮下标错位。
 
 ### 训练计划怎么工作
 
@@ -239,7 +267,7 @@ let trendEx // 进展曲线当前选中的动作名
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-07-31.6"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
