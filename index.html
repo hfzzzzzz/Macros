@@ -103,8 +103,9 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .exrow .ex1,.prow .ex1{flex:1;min-width:0}
 .exrow .ex1 b,.prow .ex1 b{display:block;font-weight:500;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .exrow .ex1 i,.prow .ex1 i{font-style:normal;font-family:var(--mono);font-size:11px;color:var(--ink-faint)}
-.exrow .vol{font-family:var(--mono);font-size:11.5px;color:var(--lift);
+.exrow .vol,.prow .vol{font-family:var(--mono);font-size:11.5px;color:var(--lift);
   font-variant-numeric:tabular-nums;white-space:nowrap}
+.prow .vol.ghost{color:var(--ink-faint)}
 .dayempty{color:var(--ink-faint);font-size:12px;padding:9px 0}
 
 /* ---- 训练计划 ---- */
@@ -280,7 +281,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.2";
+const APP_VERSION = "2026-08-03.3";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -297,22 +298,26 @@ const MEAS = [
 function baseOf(u) { return u === "ml" ? 250 : 100; }
 function unitOf(name) { const v = S.lib[name]; return (v && v.u) || "g"; }
 
-/* 内置分化模板 · days 长度固定 7，对应周一..周日，items 为空即休息日
-   用 P(名称, 组数, 次数) 构造；重量留 0，打勾时自动带出你上次的重量 */
-const P = (n, s, r) => ({ name: n, sets: s, reps: r, wt: 0 });
+/* 动作按部位分组 —— 训练侧的「模块」。加动作、排分化、建模板全都从这里取，
+   想改动作清单只动这一处，其它地方是照着它铺的。 */
+const PARTS = [
+  { name: "胸", items: ["龙门架下斜夹胸", "双杠臂屈伸", "平板卧推", "哑铃上斜卧推", "器械上斜卧推", "蝴蝶机夹胸", "反向山羊挺身卷腹"] },
+  { name: "背", items: ["高位下拉", "坐姿划船", "T杠划船", "器械坐姿划船（单手）", "直臂下压", "反向山羊挺身卷腹"] },
+  { name: "肩", items: ["蝴蝶机反向飞鸟", "面拉", "哑铃推肩", "器械推举", "龙门架侧平举", "哑铃侧平举", "反向山羊挺身卷腹"] },
+  { name: "手臂", items: ["绳索臂屈伸", "直杆臂屈伸", "仰卧杠铃臂屈伸", "杠铃弯举", "锤式弯举", "坐姿绳索弯举", "反向山羊挺身卷腹"] },
+  { name: "腿部", items: ["杠铃深蹲", "保加利亚蹲", "倒蹬", "坐姿腿屈伸", "腿弯举", "髋外展", "髋内收", "臀桥"] },
+  { name: "有氧+核心", items: ["跑步机爬坡", "卷腹机", "绳索转体", "绳索下伐木"] }
+];
+const PART_OF = {};   // 动作名 → 部位名，反查用
+for (const p of PARTS) for (const n of p.items) if (!(n in PART_OF)) PART_OF[n] = p.name;
+function partDay(p) {
+  return { name: p.name, items: p.items.map(n => ({ name: n, sets: 3, reps: 10, wt: 0 })) };
+}
+/* 内置分化 · days 长度固定 7，对应周一..周日，items 为空即休息日 */
 const REST = { name: "", items: [] };
-const D_PUSH = { name: "推", items: [P("杠铃卧推", 4, 6), P("上斜哑铃卧推", 3, 10), P("坐姿肩推", 3, 10), P("侧平举", 3, 15), P("绳索臂屈伸", 3, 12)] };
-const D_PULL = { name: "拉", items: [P("引体向上", 4, 8), P("杠铃划船", 4, 8), P("高位下拉", 3, 12), P("面拉", 3, 15), P("杠铃弯举", 3, 12)] };
-const D_LEG = { name: "腿", items: [P("深蹲", 4, 6), P("罗马尼亚硬拉", 3, 8), P("腿举", 3, 12), P("腿弯举", 3, 12), P("站姿提踵", 4, 15)] };
-const D_UP = { name: "上肢", items: [P("杠铃卧推", 4, 6), P("杠铃划船", 4, 8), P("坐姿肩推", 3, 10), P("高位下拉", 3, 10), P("杠铃弯举", 3, 12), P("绳索臂屈伸", 3, 12)] };
-const D_LOW = { name: "下肢", items: [P("深蹲", 4, 6), P("罗马尼亚硬拉", 3, 8), P("腿举", 3, 12), P("腿弯举", 3, 12), P("站姿提踵", 4, 15)] };
 const PRESETS = [
-  { name: "推拉腿 · 6 天", days: [D_PUSH, D_PULL, D_LEG, D_PUSH, D_PULL, D_LEG, REST] },
-  { name: "上下肢 · 4 天", days: [D_UP, D_LOW, REST, D_UP, D_LOW, REST, REST] },
-  { name: "全身 · 3 天", days: [
-    { name: "全身 A", items: [P("深蹲", 3, 5), P("杠铃卧推", 3, 5), P("杠铃划船", 3, 8), P("平板支撑", 3, 0)] }, REST,
-    { name: "全身 B", items: [P("硬拉", 3, 5), P("坐姿肩推", 3, 8), P("高位下拉", 3, 10), P("腿举", 3, 12)] }, REST,
-    { name: "全身 C", items: [P("前蹲", 3, 6), P("上斜哑铃卧推", 3, 8), P("引体向上", 3, 8), P("面拉", 3, 15)] }, REST, REST] }
+  { name: "六分化 · 每个部位一天", days: PARTS.map(partDay).concat([REST]) },
+  { name: "五分化 · 练五休二", days: PARTS.slice(0, 5).map(partDay).concat([REST, REST]) }
 ];
 
 let S = load();
@@ -476,7 +481,13 @@ function eatenOn(date) {
   return t;
 }
 function exOn(date) { return S.workouts.filter(w => w.date === date); }
-function volOf(w) { return (w.sets || 0) * (w.reps || 0) * (w.wt || 0); }
+/* 某个动作当前的「稳定做组重量」：最近一次真正上过重量的那次 */
+function workWt(name, before) {
+  let best = null;
+  for (const w of S.workouts)
+    if (w.name === name && (w.wt || 0) > 0 && (!before || w.date < before) && (!best || w.date > best.date)) best = w;
+  return best ? best.wt : 0;
+}
 
 /* ---------------- 训练计划 ---------------- */
 function curPlan() { return S.plans.find(p => p.id === S.activePlan) || null; }
@@ -496,20 +507,13 @@ function planStat(date) {
   for (const it of d.items) if (doneRec(date, it.name)) done++;
   return { day: d, done, total: d.items.length };
 }
-/* 上一次练这个动作用的重量，打勾时带出来，省得每次重填 */
-function lastWt(name, before) {
-  let best = null;
-  for (const w of S.workouts)
-    if (w.name === name && w.date < before && (w.wt || 0) > 0 && (!best || w.date > best.date)) best = w;
-  return best ? best.wt : 0;
-}
 function togglePlanItem(date, it) {
   const hit = doneRec(date, it.name);
   if (hit) { removeRec("workouts", hit.id); toast("已取消 " + it.name); }
   else {
     S.workouts.push({
       id: newId(), date, name: it.name, sets: it.sets || 0, reps: it.reps || 0,
-      wt: it.wt || lastWt(it.name, date), dur: 0, note: "", ts: Date.now()
+      wt: it.wt || workWt(it.name, date), dur: 0, note: "", ts: Date.now()
     });
     save(); queueSync();
   }
@@ -547,9 +551,8 @@ function renderToday() {
     <div class="k2">${nf(e.kcal)} <span>/ ${nf(t.kcal)} kcal · 余 ${nf(t.kcal - e.kcal)}</span></div></div>`;
 
   if (ex.length) {
-    const vol = ex.reduce((a, w) => a + volOf(w), 0);
     h += `<div class="kcal" style="margin-top:-8px"><div class="k1" style="color:var(--lift)">训练</div>
-      <div class="k2">${ex.length} 个动作 <span>${ex.reduce((a, w) => a + (w.sets || 0), 0)} 组${vol ? " · 容量 " + nf(vol) + " kg" : ""}</span></div></div>`;
+      <div class="k2">${ex.length} 个动作 <span>${ex.reduce((a, w) => a + (w.sets || 0), 0)} 组</span></div></div>`;
   }
 
   const rows = S.entries.filter(x => x.date === cursor);
@@ -598,11 +601,12 @@ function renderComposer() {
 function renderTrain() {
   const days = []; for (let i = 0; i < 7; i++) days.push(shiftDay(wkCursor, i));
   const tk = todayKey(), p = curPlan();
-  let nDays = 0, nSets = 0, nVol = 0, pTot = 0, pDone = 0;
+  let nDays = 0, nSets = 0, nEx = 0, pTot = 0, pDone = 0;
   for (const d of days) {
     const ex = exOn(d);
     if (ex.length) nDays++;
-    for (const w of ex) { nSets += w.sets || 0; nVol += volOf(w); }
+    nEx += ex.length;
+    for (const w of ex) nSets += w.sets || 0;
     const st = planStat(d);
     if (st) { pTot += st.total; pDone += st.done; }
   }
@@ -619,8 +623,8 @@ function renderTrain() {
   }).join("")}</div>
   <div class="wsum">
     <div><span>${nDays}<small style="display:inline;font-size:11px;color:var(--ink-faint)">/7</small></span><small>训练日</small></div>
+    <div><span>${nEx || "–"}</span><small>动作数</small></div>
     <div><span>${nSets}</span><small>总组数</small></div>
-    <div><span>${nVol ? nf(nVol) : "–"}</span><small>容量 KG</small></div>
     ${pTot ? `<div><span${pDone >= pTot ? ` style="color:var(--ok)"` : ""}>${pDone}<small style="display:inline;font-size:11px;color:var(--ink-faint)">/${pTot}</small></span><small>计划完成</small></div>` : ""}
   </div>`;
 
@@ -633,20 +637,21 @@ function renderTrain() {
     if (st) st.day.items.forEach((it, j) => {
       const rec = doneRec(d, it.name);
       if (rec) taken[rec.id] = 1;
+      // 右侧显示稳定做组的重量：做完了看实做，没做看计划值或上次的
+      const wt = rec ? (rec.wt || 0) : (it.wt || workWt(it.name, d));
       h += `<div class="prow${rec ? " done" : ""}">
         <button class="ck" data-tick="${i}|${j}">✓</button>
         <div class="ex1" data-${rec ? `edit="${rec.id}"` : `padd="${i}|${j}"`}>
           <b>${esc(it.name)}</b><i>${rec ? descOf(rec) : planDesc(it)}</i></div>
-        <div class="vol">${rec && volOf(rec) ? nf(volOf(rec)) + " kg" : ""}</div></div>`;
+        <div class="vol${rec ? "" : " ghost"}">${wt ? r1(wt) + " kg" : ""}</div></div>`;
     });
     const extra = ex.filter(w => !taken[w.id]);
     if (st && extra.length) h += `<div class="subhead">计划外</div>`;
     if (!st && !extra.length) h += `<div class="dayempty">—</div>`;
     for (const w of extra) {
-      const v = volOf(w);
       h += `<div class="exrow" data-edit="${w.id}">
         <div class="ex1"><b>${esc(w.name)}</b><i>${descOf(w)}</i></div>
-        <div class="vol">${v ? nf(v) + " kg" : ""}</div></div>`;
+        <div class="vol">${w.wt ? r1(w.wt) + " kg" : ""}</div></div>`;
     }
     h += `</div>`;
   });
@@ -660,7 +665,7 @@ function renderTrain() {
   });
   scroll.querySelectorAll("[data-padd]").forEach(b => b.onclick = () => {
     const x = pick(b.dataset.padd); if (!x) return;
-    exSheet(null, x.d, { name: x.it.name, sets: x.it.sets, reps: x.it.reps, wt: x.it.wt || lastWt(x.it.name, x.d) });
+    exSheet(null, x.d, { name: x.it.name, sets: x.it.sets, reps: x.it.reps, wt: x.it.wt || workWt(x.it.name, x.d) });
   });
   scroll.querySelectorAll("[data-add]").forEach(b => b.onclick = () => exSheet(null, b.dataset.add));
   scroll.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
@@ -669,9 +674,10 @@ function renderTrain() {
 }
 function planDesc(it) {
   const bits = [];
+  if (PART_OF[it.name]) bits.push(PART_OF[it.name]);
   if (it.sets && it.reps) bits.push(it.sets + "×" + it.reps);
   else if (it.sets) bits.push(it.sets + " 组");
-  if (it.wt) bits.push("@" + r1(it.wt) + "kg");
+  if (!it.wt && workWt(it.name)) bits.push("上次 " + r1(workWt(it.name)) + "kg");
   return esc(bits.join("  ")) || "待定";
 }
 function descOf(w) {
@@ -683,19 +689,48 @@ function descOf(w) {
   if (w.note) bits.push(w.note);
   return esc(bits.join("  ")) || "—";
 }
+/* 最近用过、但不在部位目录里的动作名（目录里的走部位选择器，不重复列） */
 function exNames() {
   const seen = {}, out = [];
-  for (let i = S.workouts.length - 1; i >= 0 && out.length < 14; i--) {
+  for (let i = S.workouts.length - 1; i >= 0 && out.length < 10; i--) {
     const n = S.workouts[i].name;
-    if (!seen[n]) { seen[n] = 1; out.push(n); }
+    if (!seen[n] && !(n in PART_OF)) { seen[n] = 1; out.push(n); }
   }
   return out;
+}
+
+/* ---------------- 部位选择器 ----------------
+   两级：先点部位，再点具体动作。挂在一个容器 id 上，展开/收起只重画自己，
+   不碰同一张 sheet 上已经填好的表单。onAll 给了就多一个「整组加入」按钮。 */
+let pickPart = "";
+function mountPartPicker(id, onPick, onAll) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const p = PARTS.find(x => x.name === pickPart);
+  let h = `<div class="chips" style="margin-bottom:${p ? 6 : 10}px">${PARTS.map(x =>
+    `<button class="chip${x.name === pickPart ? " on" : ""}" data-part="${esc(x.name)}">${esc(x.name)}</button>`).join("")}</div>`;
+  if (p) {
+    h += `<div class="chips" style="margin-bottom:8px">${p.items.map(n => {
+      const wt = workWt(n);
+      return `<button class="chip" data-pex="${esc(n)}">${esc(n)}${wt ? ` <em style="font-style:normal;color:var(--lift)">${r1(wt)}kg</em>` : ""}</button>`;
+    }).join("")}</div>`;
+    if (onAll) h += `<div class="btnrow" style="margin:0 0 10px"><button data-pall="1">整组加入 · ${p.items.length} 个动作</button></div>`;
+  }
+  el.innerHTML = h;
+  el.querySelectorAll("[data-part]").forEach(b => b.onclick = () => {
+    pickPart = pickPart === b.dataset.part ? "" : b.dataset.part;
+    mountPartPicker(id, onPick, onAll);
+  });
+  el.querySelectorAll("[data-pex]").forEach(b => b.onclick = () => onPick(b.dataset.pex));
+  const all = el.querySelector("[data-pall]");
+  if (all) all.onclick = () => onAll(p);
 }
 function exSheet(rec, date, pre) {
   const w = rec || Object.assign({ name: "", sets: "", reps: "", wt: "", dur: "", note: "", date: date }, pre || {});
   const recents = exNames();
   let h = `<h3>${rec ? "编辑动作" : "添加动作"}</h3>
-    <div class="sh-sub">${w.date} · 只填用得上的字段，其余留空</div>`;
+    <div class="sh-sub">${w.date} · 选部位挑动作，或直接手填；只填用得上的字段</div>`;
+  if (!rec) h += `<div id="ppick"></div>`;
   if (!rec && recents.length) h += `<div class="chips" style="margin-bottom:10px">${
     recents.map(n => `<button class="chip" data-rn="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
   h += `<div class="frow"><div class="fcell text" style="flex:1">
@@ -716,6 +751,14 @@ function exSheet(rec, date, pre) {
   openSheet(h);
   const g = id => document.getElementById(id);
   document.querySelectorAll("[data-rn]").forEach(b => b.onclick = () => { g("e_name").value = b.dataset.rn; });
+  // 从目录选中动作时，顺手把稳定重量和常用组次带出来
+  if (!rec) mountPartPicker("ppick", n => {
+    g("e_name").value = n;
+    if (!g("e_sets").value) g("e_sets").value = 3;
+    if (!g("e_reps").value) g("e_reps").value = 10;
+    const wt = workWt(n);
+    if (wt && !g("e_wt").value) g("e_wt").value = r1(wt);
+  });
   g("e_cancel").onclick = closeSheet;
   if (rec) g("e_del").onclick = () => { removeRec("workouts", rec.id); closeSheet(); render(); };
   g("e_save").onclick = () => {
@@ -817,18 +860,22 @@ function planEditSheet() {
 function planDaySheet(i) {
   if (!draft) return planSheet();
   const d = draft.days[i], recents = exNames();
-  let h = `<h3>${DOW[i]}</h3><div class="sh-sub">${esc(draft.name)} · 重量留给实际训练时填</div>
+  let h = `<h3>${DOW[i]}</h3><div class="sh-sub">${esc(draft.name)} · 选部位往里填，重量填你稳定做组的那个</div>
     <div class="frow"><div class="fcell text" style="flex:1"><label>这天叫什么</label>
-      <input id="pd_name" value="${esc(d.name)}" placeholder="推 / 上肢 / 全身 A"></div></div>`;
+      <input id="pd_name" value="${esc(d.name)}" placeholder="胸 / 背 / 腿部"></div></div>
+    <div id="ppick"></div>`;
   if (recents.length) h += `<div class="chips" style="margin-bottom:10px">${
     recents.map(n => `<button class="chip" data-rn="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
   h += `<div class="daylist">`;
   d.items.forEach((it, j) => {
-    h += `<div class="item"><div class="it1">
-      <input class="nm" data-in="${j}" value="${esc(it.name)}" placeholder="动作名称">
-      <span class="gwrap"><input class="gm sm" data-is="${j}" type="number" inputmode="numeric" value="${it.sets || ""}" placeholder="–"><em>组</em></span>
-      <span class="gwrap"><input class="gm sm" data-ir="${j}" type="number" inputmode="numeric" value="${it.reps || ""}" placeholder="–"><em>次</em></span>
-      <button class="drop" data-ix="${j}">×</button></div></div>`;
+    h += `<div class="item">
+      <div class="it1"><input class="nm" data-in="${j}" value="${esc(it.name)}" placeholder="动作名称">
+        <button class="drop" data-ix="${j}">×</button></div>
+      <div class="it1" style="margin-bottom:0">
+        <span class="gwrap"><input class="gm sm" data-is="${j}" type="number" inputmode="numeric" value="${it.sets || ""}" placeholder="–"><em>组</em></span>
+        <span class="gwrap"><input class="gm sm" data-ir="${j}" type="number" inputmode="numeric" value="${it.reps || ""}" placeholder="–"><em>次</em></span>
+        <span class="gwrap" style="flex:1"><input class="gm" data-iw="${j}" type="number" inputmode="decimal" step="0.5" value="${it.wt || ""}" placeholder="${workWt(it.name) ? r1(workWt(it.name)) : "–"}"><em>kg 稳定重量</em></span>
+      </div></div>`;
   });
   if (!d.items.length) h += `<div class="dayempty" style="text-align:center;padding:12px 0">休息日 · 点下面添加动作</div>`;
   h += `</div><div class="btnrow"><button id="pd_add">+ 添加动作</button></div>
@@ -840,9 +887,14 @@ function planDaySheet(i) {
     document.querySelectorAll("[data-in]").forEach(el => d.items[+el.dataset.in].name = el.value.trim());
     document.querySelectorAll("[data-is]").forEach(el => d.items[+el.dataset.is].sets = Math.max(0, parseInt(el.value, 10) || 0));
     document.querySelectorAll("[data-ir]").forEach(el => d.items[+el.dataset.ir].reps = Math.max(0, parseInt(el.value, 10) || 0));
+    document.querySelectorAll("[data-iw]").forEach(el => { const v = parseFloat(el.value); d.items[+el.dataset.iw].wt = isFinite(v) && v > 0 ? v : 0; });
   };
+  const addEx = n => { if (!d.items.some(x => x.name === n)) d.items.push({ name: n, sets: 3, reps: 10, wt: 0 }); };
+  mountPartPicker("ppick",
+    n => { grab(); addEx(n); planDaySheet(i); },
+    p => { grab(); if (!d.name) d.name = p.name; p.items.forEach(addEx); planDaySheet(i); });
   document.querySelectorAll("[data-rn]").forEach(b => b.onclick = () => {
-    grab(); d.items.push({ name: b.dataset.rn, sets: 3, reps: 10, wt: 0 }); planDaySheet(i);
+    grab(); addEx(b.dataset.rn); planDaySheet(i);
   });
   document.querySelectorAll("[data-ix]").forEach(b => b.onclick = () => {
     grab(); d.items.splice(+b.dataset.ix, 1); planDaySheet(i);
@@ -913,17 +965,15 @@ function exSessions(name) {
   const by = {};
   for (const w of S.workouts) {
     if (w.name !== name) continue;
-    const s = by[w.date] || (by[w.date] = { date: w.date, top: 0, e1: 0, vol: 0, sets: 0, reps: 0, dur: 0 });
-    s.vol += volOf(w); s.sets += w.sets || 0; s.reps += (w.sets || 0) * (w.reps || 0); s.dur += w.dur || 0;
-    if ((w.wt || 0) > s.top) s.top = w.wt;
-    const e = (w.wt || 0) * (1 + (w.reps || 0) / 30);   // Epley 预估 1RM
-    if (e > s.e1) s.e1 = e;
+    const s = by[w.date] || (by[w.date] = { date: w.date, top: 0, sets: 0, reps: 0, dur: 0 });
+    s.sets += w.sets || 0; s.reps += (w.sets || 0) * (w.reps || 0); s.dur += w.dur || 0;
+    if ((w.wt || 0) > s.top) s.top = w.wt;   // 当天做组用的重量
   }
   return Object.values(by).sort((a, b) => a.date < b.date ? -1 : 1);
 }
 /* 有重量看预估 1RM，徒手看总次数，纯有氧看时长，都没有就看组数 */
 function metricOf(ss) {
-  if (ss.some(s => s.e1 > 0)) return { k: "e1", lbl: "预估 1RM", u: "kg", d: 1 };
+  if (ss.some(s => s.top > 0)) return { k: "top", lbl: "稳定重量", u: "kg", d: 1 };
   if (ss.some(s => s.reps > 0)) return { k: "reps", lbl: "总次数", u: "次", d: 0 };
   if (ss.some(s => s.dur > 0)) return { k: "dur", lbl: "时长", u: "min", d: 1 };
   return { k: "sets", lbl: "组数", u: "组", d: 0 };
@@ -933,8 +983,6 @@ function sessLine(s) {
   const b = [];
   if (s.sets) b.push(s.sets + " 组");
   if (s.reps) b.push(s.reps + " 次");
-  if (s.top) b.push("最重 " + r1(s.top) + "kg");
-  else if (s.vol) b.push("容量 " + nf(s.vol) + "kg");
   if (s.dur) b.push(r1(s.dur) + "min");
   return b.join(" · ") || "—";
 }
@@ -1854,12 +1902,12 @@ function exportCSV() {
   download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }
 function exportWorkoutCSV() {
-  const head = "日期,星期,动作,组数,次数,重量kg,容量kg,时长min,备注\n";
+  const head = "日期,星期,部位,动作,组数,次数,重量kg,时长min,备注\n";
   const rows = S.workouts.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(w => {
     const [y, m, d] = w.date.split("-").map(Number);
     const dw = DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
-    return [w.date, dw, '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
-      w.wt || "", volOf(w) || "", w.dur || "", '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
+    return [w.date, dw, PART_OF[w.name] || "", '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
+      w.wt || "", w.dur || "", '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
   }).join("\n");
   download("macros_training_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }

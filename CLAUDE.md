@@ -13,7 +13,7 @@
 ## 仓库结构
 
 ```
-index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 1750 行）
+index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 1950 行）
 README.md    ← 只有一行标题
 CLAUDE.md    ← 本文件
 ```
@@ -53,10 +53,11 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的两轮：
+历史上跑过的三轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
-- `2026-08-03.2`（当前）：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
+- `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
+- `2026-08-03.3`（当前）：58 项，专攻训练侧模块化 —— 六个部位的动作清单逐条核对、预设由部位生成且不污染常量、部位选择器展开/收起/整组加入/不重复、稳定重量的读取与打勾优先级、容量在六处显示中确实消失；外加一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -75,12 +76,13 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 | 段落 | 职责 |
 |---|---|
-| 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、内置分化预设 |
+| 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、`PARTS` 动作目录、内置分化预设 |
 | `state` | `blank()` / `migrate()` / `load()` / `save()` |
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
-| `computed` | `weightOn()` / `targets()` / `eatenOn()` / `exOn()` / `volOf()` |
+| `computed` | `weightOn()` / `targets()` / `eatenOn()` / `exOn()` / `workWt()` |
 | `render` | `render()` 总调度 + 四个 tab 的渲染函数 |
-| `训练计划` | `curPlan/planDay/planStat/doneRec/lastWt/togglePlanItem` |
+| `训练计划` | `curPlan/planDay/planStat/doneRec/workWt/togglePlanItem` |
+| `部位选择器` | `mountPartPicker()` —— 两级 chip，加动作和排分化共用 |
 | `训练` | 周视图、当日计划打勾、动作编辑 sheet |
 | `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
 | `趋势` | 近 14 天条形图 |
@@ -127,7 +129,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
               // g 是分量数值，u 是它的单位（"g" / "ml"）
               // c/p/f 是这一条的绝对克数（不是每份）
   workouts: [{ id, date, name, sets, reps, wt, dur, note, ts }],
-              // 用不到的字段存 0 / ""；容量 = sets*reps*wt
+              // 用不到的字段存 0 / ""；wt 就是那天做组用的重量
   weights:  { "2026-07-31": { v: 72.5, ts } },              // kg
   meas:     { "2026-07-31": { arm, chest, waist, hip, ts } },// cm，字段可缺；全缺就不存这天
   lib:      { "鸡胸肉":  { c: 0,   p: 23.1, f: 1.9,  u: "g",  ts },   // 每 100 g
@@ -150,7 +152,6 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 计算规则：
 - 目标 = **当日体重** × 系数。`weightOn(date)` 取 `<= date` 的最近一条体重，所以改历史体重会改历史目标。
 - 热量 = `c*4 + p*4 + f*9`（`KCAL` 常量）。
-- 训练容量 = `sets × reps × wt`，任一为 0 则为 0。
 
 ### 单位：一份 = 100 g 或 250 ml
 
@@ -228,13 +229,32 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 - 入口有两个：今日页 composer 顶上的 ⚡ chip 行（只在有搭配时才渲染，没有就不占地方），和「设置 → 常规摄入」。
 - 编辑走 `draft`，跟分化编辑器同一套；`routineEditSheet` 的 `grab()` 同样**不过滤空行**，否则删除按钮下标错位。
 
+### 动作目录按部位模块化
+
+`PARTS` 是训练侧唯一的动作来源：六个部位（胸 / 背 / 肩 / 手臂 / 腿部 / 有氧+核心），每个部位一串动作名。**想改动作清单只动这一处**，内置分化、部位选择器、CSV 的部位列全是照着它铺的。
+
+- `PART_OF` 是「动作名 → 部位」的反查表，同名动作（比如「反向山羊挺身卷腹」出现在多个部位）归到**第一个**出现的部位。
+- `PRESETS` 由 `PARTS.map(partDay)` 生成，不再手写：六分化（一天一个部位）和五分化（练五休二）。默认 3×10、重量留 0。
+- `mountPartPicker(id, onPick, onAll)` 是两级 chip 选择器，挂在一个容器 id 上。展开/收起**只重画自己**，不碰同一张 sheet 上已填好的表单 —— 这是它没写成整体重渲染的原因。`onAll` 给了就多一个「整组加入」按钮。
+- 加动作（`exSheet`）和排分化（`planDaySheet`）共用它。加动作时选中会顺带填上 3×10 和该动作的稳定重量。
+- 「最近用过」的 chip 只列**不在目录里**的动作名，避免和目录重复。
+
+### 稳定做组的重量
+
+`workWt(name, before)` = 该动作最近一次真正上过重量（`wt > 0`）的那条记录的重量；`before` 给了就只看更早的。
+
+- 分化里每个动作可以存一个 `wt`（`planDaySheet` 里那个 kg 输入框），这就是你稳定做组的重量。
+- 打勾时取 `it.wt || workWt(name, date)` —— 优先用计划里设的，没设就带出上次的。
+- 训练页每行右侧显示这个重量：做完了显示实做值（亮色），没做显示计划值或历史值（`.vol.ghost` 暗色）作提示。
+- 进展曲线的默认指标就是它（`metricOf` 的 `top`）。**曾经是 Epley 预估 1RM 和训练容量，都已经去掉了** —— 别再加回来。
+
 ### 训练计划怎么工作
 
 核心设计：**「完成」不是一个字段，而是「当天存在同名的 `workouts` 记录」**（`doneRec(date, name)`）。
 
 这么做的好处，改动这块前务必理解：
 
-- `workouts` 仍是训练历史的唯一真相，容量统计、CSV 导出、进展曲线、merge 全都不用动。
+- `workouts` 仍是训练历史的唯一真相，组数统计、CSV 导出、进展曲线、merge 全都不用动。
 - 手动记的和打勾记的是同一份数据 —— 你自己加一条「深蹲」，计划里的深蹲会自动变成已完成。
 - 打勾 = `push` 一条 `workouts`；取消打勾 = `removeRec`（写墓碑），所以多端同步天然一致。
 
@@ -262,7 +282,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 | 条件 | 指标 |
 |---|---|
-| 有重量 | 预估 1RM（Epley：`wt × (1 + reps/30)`） |
+| 有重量 | 稳定做组重量（当天那条记录的 `wt`） |
 | 徒手但有次数 | 总次数 |
 | 只有时长 | 时长 |
 | 其它 | 组数 |
@@ -285,7 +305,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.2"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.3"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
@@ -298,12 +318,12 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 营养侧和训练侧的主体都已完成：
 
 - ✅ 营养：三大营养素目标/剩余、四餐分组、食物库、趋势、CSV
-- ✅ 训练记录：按日记录、周视图、组数/容量汇总、CSV
+- ✅ 训练记录：按日记录、周视图、动作数/组数汇总、CSV
 - ✅ 训练计划：分化模板（3 个内置预设）、按星期铺开、打勾完成、周完成度、按动作的进展曲线
 
 还没做、想做可以从这里接：
 
 - **渐进超负荷提示** —— 数据已经够了（`exSessions` + `lastWt`），可以在打勾时提示「上次 4×6 @60，这次试 62.5」
 - **分化按 N 天循环**而不是绑星期（现在 `planDay()` 直接用 `dowIndex()`，改这里要同时改周视图的呈现）
-- **组级记录** —— 现在一个动作一条记录，练到一半改重量只能记平均；要精确得让 `workouts` 带一个 `sets:[{reps,wt}]` 数组（注意四处同步 + `volOf` + CSV）
+- **组级记录** —— 现在一个动作一条记录，练到一半改重量只能记平均；要精确得让 `workouts` 带一个 `sets:[{reps,wt}]` 数组（注意四处同步 + `exSessions` + CSV）
 - **休息计时器**、**动作示范图** —— 都需要额外资源，跟「单文件零依赖」的约束冲突，想清楚再做
