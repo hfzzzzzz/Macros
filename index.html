@@ -280,7 +280,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03";
+const APP_VERSION = "2026-08-03.2";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -289,6 +289,11 @@ const GIST_FILE = "macros.json";
 /* 食物库按「一份」存营养值：固体一份 = 100 g，液体一份 = 250 ml。
    老数据没有 u 字段，一律当固体，所以升级不会动到任何已有数值。 */
 const UNITS = ["g", "ml"];
+/* 身体维度，全部按厘米记；顺序就是录入和图表里的顺序 */
+const MEAS = [
+  { k: "arm", lbl: "臂围" }, { k: "chest", lbl: "胸围" },
+  { k: "waist", lbl: "腰围" }, { k: "hip", lbl: "臀围" }
+];
 function baseOf(u) { return u === "ml" ? 250 : 100; }
 function unitOf(name) { const v = S.lib[name]; return (v && v.u) || "g"; }
 
@@ -318,15 +323,16 @@ let meal = guessMeal();
 let pending = null;
 let draft = null;      // 正在编辑的分化副本，保存时才写回 S.plans
 let trendEx = "";      // 进展曲线当前选中的动作
+let trendMeas = "arm"; // 维度曲线当前选中的项目
 let syncing = false, syncTimer = null;
 
 /* ---------------- state ---------------- */
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 5, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 6, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
-    libTomb: {}, plans: [], activePlan: "", routines: [],
+    libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
     sync: { token: "", gistId: "", last: 0 }
   };
 }
@@ -362,6 +368,19 @@ function migrate(o) {
     s.routines = Array.isArray(o.routines) ? o.routines : [];
     s.v = 5;
   }
+  if (!o.v || o.v < 6) {
+    s.meas = (o.meas && typeof o.meas === "object") ? o.meas : {};
+    s.v = 6;
+  }
+  // 维度：只留认识的字段和正数，空记录整条丢掉
+  const ms = {};
+  for (const d in (s.meas || {})) {
+    const src = s.meas[d] || {}, one = { ts: src.ts || 0 };
+    let any = false;
+    for (const x of MEAS) { const v = Number(src[x.k]); if (isFinite(v) && v > 0) { one[x.k] = v; any = true; } }
+    if (any) ms[d] = one;
+  }
+  s.meas = ms;
   // 补单位：老条目全是固体，标成 g，数值一个都不动
   const lib = {};
   for (const n in s.lib) {
@@ -860,13 +879,26 @@ function renderTrend() {
   if (n || td) h += `<div class="card"><h4>汇总</h4><div class="readout">
       ${n ? `有记录 <b>${n}</b> 天 · 达成率 碳水 <b>${r0(sc / n * 100)}%</b> 蛋白 <b>${r0(sp / n * 100)}%</b> 脂肪 <b>${r0(sf / n * 100)}%</b><br>` : ""}
       训练 <b>${td}</b> 天 / 14</div></div>`;
+  h += bodyCards();
   h += progressCard();
   scroll.innerHTML = h;
   scroll.querySelectorAll("[data-ex]").forEach(b => b.onclick = () => { trendEx = b.dataset.ex; render(); });
-  const read = scroll.querySelector("#curread");
-  if (read) scroll.querySelectorAll("[data-pt]").forEach(el => el.onclick = () => {
-    const ss = exSessions(trendEx), s = ss[+el.dataset.pt];
-    if (s) read.innerHTML = `<b>${s.date.slice(5)}</b> · ${sessLine(s)}`;
+  scroll.querySelectorAll("[data-mk]").forEach(b => b.onclick = () => { trendMeas = b.dataset.mk; render(); });
+  const bb = scroll.querySelector("#b_body");
+  if (bb) bb.onclick = () => bodySheet(todayKey());
+  // 三张图共用 [data-pt]，靠 key 区分点到的是哪一张
+  scroll.querySelectorAll("[data-pt]").forEach(el => el.onclick = () => {
+    const bits = String(el.dataset.pt).split("|"), key = bits[0], i = +bits[1];
+    const read = scroll.querySelector("#" + key + "read");
+    if (!read) return;
+    if (key === "ex") {
+      const s = exSessions(trendEx)[i];
+      if (s) read.innerHTML = `<b>${s.date.slice(5)}</b> · ${esc(sessLine(s))}`;
+    } else {
+      const ss = key === "w" ? weightSeries() : measSeries(trendMeas);
+      const m = key === "w" ? M_KG : measM(trendMeas), s = ss[i];
+      if (s) read.innerHTML = `<b>${s.date.slice(5)}</b> · ${esc(fmtM(s.v, m))}`;
+    }
   });
 }
 
@@ -906,7 +938,9 @@ function sessLine(s) {
   if (s.dur) b.push(r1(s.dur) + "min");
   return b.join(" · ") || "—";
 }
-function curveSVG(ss, m) {
+/* key 用来区分同一页上的多张图，col 是线的颜色变量名 */
+function curveSVG(ss, m, key, col) {
+  key = key || "ex"; col = col || "var(--lift)";
   const W = 320, H = 108, L = 10, R = 10, T = 20, B = 20;
   const vals = ss.map(s => s[m.k]), n = vals.length;
   let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
@@ -916,15 +950,15 @@ function curveSVG(ss, m) {
   const Y = v => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
   const pts = vals.map((v, i) => X(i).toFixed(1) + "," + Y(v).toFixed(1)).join(" ");
   const base = H - B;
-  let g = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(trendEx)} ${m.lbl}趋势">
-    <polygon points="${L},${base} ${pts} ${W - R},${base}" fill="var(--lift)" opacity=".10"></polygon>
+  let g = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(m.lbl)}趋势">
+    <polygon points="${L},${base} ${pts} ${W - R},${base}" fill="${col}" opacity=".10"></polygon>
     <line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="var(--line)" stroke-width="1"></line>
-    <polyline points="${pts}" fill="none" stroke="var(--lift)" stroke-width="2"
+    <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2"
       stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></polyline>`;
   vals.forEach((v, i) => {
     const last = i === n - 1;
     g += `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="${last ? 4 : 3}"
-      fill="var(--lift)" stroke="var(--surface)" stroke-width="2"></circle>`;
+      fill="${col}" stroke="var(--surface)" stroke-width="2"></circle>`;
   });
   // 只直接标注首尾两点，中间的点靠点击查看
   const lab = (i, anchor) => `<text class="val" x="${X(i).toFixed(1)}" y="${Math.max(12, Y(vals[i]) - 9).toFixed(1)}"
@@ -933,9 +967,103 @@ function curveSVG(ss, m) {
   g += `<text x="${L}" y="${H - 5}" font-size="10">${ss[0].date.slice(5)}</text>
     <text x="${W - R}" y="${H - 5}" font-size="10" text-anchor="end">${ss[n - 1].date.slice(5)}</text>`;
   vals.forEach((v, i) => {   // 透明大圆做触摸目标
-    g += `<circle data-pt="${i}" cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="13" fill="transparent"></circle>`;
+    g += `<circle data-pt="${key}|${i}" cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="13" fill="transparent"></circle>`;
   });
   return g + `</svg>`;
+}
+/* ---------------- 体重与维度 ----------------
+   两者都是「按日期存一条」，跟 weights 一样按 key 逐条 LWW 合并。
+   序列统一做成 [{date, v}]，直接喂给 curveSVG。 */
+function weightSeries() {
+  return Object.keys(S.weights).sort()
+    .map(d => ({ date: d, v: Number(S.weights[d].v) }))
+    .filter(x => isFinite(x.v) && x.v > 0);
+}
+function measSeries(k) {
+  return Object.keys(S.meas).sort()
+    .filter(d => S.meas[d][k] > 0)
+    .map(d => ({ date: d, v: S.meas[d][k] }));
+}
+function measOn(date) { return S.meas[date] || {}; }
+/* 曲线 + 变化量 + 最近记录，体重和维度共用一套 */
+function seriesBlock(ss, m, key, col, emptyHint) {
+  if (!ss.length) return `<div class="dayempty" style="text-align:center;padding:12px 0">${esc(emptyHint)}</div>`;
+  const last = ss[ss.length - 1];
+  if (ss.length < 2) return `<div class="dayempty" style="text-align:center;padding:12px 0">
+    ${last.date.slice(5)} · <b style="color:var(--ink)">${esc(fmtM(last.v, m))}</b><br>再记一次就有曲线了</div>`;
+  // 不判好坏：减脂时体重下降是好事，增肌时又反过来，App 不知道你的目标
+  const first = ss[0].v, dv = last.v - first;
+  const pct = first > 0 ? Math.round(dv / first * 1000) / 10 : 0;
+  let h = `<div class="readout" style="margin-bottom:2px">${esc(m.lbl)} · ${ss.length} 次记录 · 最新 <b>${esc(fmtM(last.v, m))}</b></div>
+    <div class="chart">${curveSVG(ss, m, key, col)}</div>
+    <div class="readout" id="${key}read">较首次 <b>${dv >= 0 ? "+" : ""}${esc(fmtM(dv, m))}</b>${
+      first > 0 ? ` (${pct >= 0 ? "+" : ""}${pct}%)` : ""} · 点曲线上的点看当次数值</div>`;
+  for (const s of ss.slice(-6).reverse())
+    h += `<div class="sess"><span class="sd">${s.date.slice(5)}</span>
+      <span class="sv"></span><span class="sm">${esc(fmtM(s.v, m))}</span></div>`;
+  return h;
+}
+const M_KG = { k: "v", lbl: "体重", u: "kg", d: 1 };
+function measM(k) { return { k: "v", lbl: (MEAS.find(x => x.k === k) || MEAS[0]).lbl, u: "cm", d: 1 }; }
+function bodyCards() {
+  let h = `<div class="card"><h4>体重</h4>
+    ${seriesBlock(weightSeries(), M_KG, "w", "var(--ink)", "还没有体重记录")}
+    <div class="btnrow"><button class="pri" id="b_body">+ 记录体重 / 维度</button></div></div>`;
+  if (MEAS.every(x => !measSeries(x.k).length) && !Object.keys(S.meas).length) return h;
+  if (!MEAS.some(x => x.k === trendMeas)) trendMeas = MEAS[0].k;
+  h += `<div class="card"><h4>身体维度</h4>
+    <div class="chips" style="margin-bottom:10px">${MEAS.map(x => {
+      const n = measSeries(x.k).length;
+      return `<button class="chip${x.k === trendMeas ? " on" : ""}" data-mk="${x.k}">${x.lbl}${n ? "" : " –"}</button>`;
+    }).join("")}</div>
+    ${seriesBlock(measSeries(trendMeas), measM(trendMeas), "m", "var(--ink)", "这一项还没有记录")}</div>`;
+  return h;
+}
+function bodySheet(date) {
+  const d0 = date || todayKey();
+  const w = S.weights[d0], mm = measOn(d0);
+  const has = !!w || !!S.meas[d0];
+  openSheet(`<h3>身体记录</h3>
+    <div class="sh-sub">留空的项目不会被记录，也不会覆盖已有的数值</div>
+    <div class="frow"><div class="fcell text" style="flex:1"><label>日期</label>
+      <input id="bd_date" type="date" value="${d0}"></div>
+      <div class="fcell"><label>体重 KG</label>
+        <input id="bd_w" type="number" inputmode="decimal" step="0.1" value="${w ? r1(w.v) : ""}" placeholder="–"></div></div>
+    <div class="frow">${MEAS.slice(0, 2).map(x =>
+      `<div class="fcell"><label>${x.lbl} CM</label>
+        <input id="bd_${x.k}" type="number" inputmode="decimal" step="0.1" value="${mm[x.k] ? r1(mm[x.k]) : ""}" placeholder="–"></div>`).join("")}</div>
+    <div class="frow">${MEAS.slice(2).map(x =>
+      `<div class="fcell"><label>${x.lbl} CM</label>
+        <input id="bd_${x.k}" type="number" inputmode="decimal" step="0.1" value="${mm[x.k] ? r1(mm[x.k]) : ""}" placeholder="–"></div>`).join("")}</div>
+    <div class="sheetact">
+      ${has ? `<button class="danger" id="bd_del">删除</button>` : ""}
+      <button class="ghost" id="bd_cancel">取消</button>
+      <button class="go" id="bd_save">保存</button></div>`);
+  const g = id => document.getElementById(id);
+  g("bd_cancel").onclick = closeSheet;
+  if (has) g("bd_del").onclick = () => {
+    const dd = g("bd_date").value || d0;
+    delete S.weights[dd]; delete S.meas[dd];
+    save(); queueSync(); closeSheet(); render();
+    toast(dd + " 的身体记录已删除");
+  };
+  g("bd_save").onclick = () => {
+    const dd = g("bd_date").value || d0;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dd)) { toast("日期不对"); return; }
+    const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
+    const now = Date.now();
+    const wv = num("bd_w");
+    let touched = 0;
+    if (wv) { S.weights[dd] = { v: wv, ts: now }; if (dd >= todayKey()) S.weight = wv; touched++; }
+    const one = { ts: now };
+    let any = false;
+    for (const x of MEAS) { const v = num("bd_" + x.k); if (v) { one[x.k] = v; any = true; } }
+    if (any) { S.meas[dd] = one; touched++; }
+    else if (S.meas[dd]) delete S.meas[dd];
+    if (!touched) { toast("至少填一项"); return; }
+    save(); closeSheet(); render(); queueSync();
+    toast("已记录 " + dd);
+  };
 }
 function progressCard() {
   const names = exFreq();
@@ -953,7 +1081,7 @@ function progressCard() {
   const pct = first > 0 ? Math.round(dv / first * 100) : 0;
   h += `<div class="readout" style="margin-bottom:2px">${m.lbl} · ${ss.length} 次记录</div>
     <div class="chart">${curveSVG(ss, m)}</div>
-    <div class="readout" id="curread">较首次 <b${cls}>${dv >= 0 ? "+" : ""}${fmtM(dv, m)}</b>${
+    <div class="readout" id="exread">较首次 <b${cls}>${dv >= 0 ? "+" : ""}${fmtM(dv, m)}</b>${
       first > 0 ? ` (${pct >= 0 ? "+" : ""}${pct}%)` : ""} · 点曲线上的点看当次明细</div>`;
   h += `<h4 style="margin:14px 0 4px">最近记录</h4>`;
   for (const s of ss.slice(-8).reverse())
@@ -979,6 +1107,8 @@ function renderSettings() {
     <div class="fld"><label>脂肪 g/kg</label><input id="s_kf" type="number" inputmode="decimal" step="0.1" value="${S.kf}"></div>
     <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g<br>
       <b>${nf(t.kcal)}</b> kcal · <b>${r1(t.kcal / t.w)}</b> kcal/kg</div>
+    <div class="readout" style="margin-top:6px">体重 <b>${Object.keys(S.weights).length}</b> 条 · 维度 <b>${Object.keys(S.meas).length}</b> 条</div>
+    <div class="btnrow"><button id="s_body">记录体重 / 维度</button></div>
   </div>
 
   <div class="card"><h4>多端同步</h4>
@@ -1038,6 +1168,7 @@ function renderSettings() {
   q("#y_new").onclick = createGist;
   q("#y_now").onclick = () => syncNow(false);
   q("#b_prompt").onclick = async () => toast(await copyText(SYS) ? "已复制，去 claude.ai 建项目粘进指令栏" : "复制失败");
+  q("#s_body").onclick = () => bodySheet(todayKey());
   q("#b_lib").onclick = showLib;
   q("#b_ro").onclick = routineSheet;
   q("#b_csv").onclick = exportCSV;
@@ -1083,6 +1214,11 @@ function merge(local, remote) {
     const r = remote.weights[d], l = out.weights[d];
     if (!l || (r.ts || 0) > (l.ts || 0)) out.weights[d] = r;
   }
+  out.meas = Object.assign({}, local.meas || {});
+  for (const d in (remote.meas || {})) {
+    const r = remote.meas[d], l = out.meas[d];
+    if (!l || (r.ts || 0) > (l.ts || 0)) out.meas[d] = r;
+  }
   out.libTomb = Object.assign({}, local.libTomb || {});
   for (const k in (remote.libTomb || {}))
     if (!(k in out.libTomb) || remote.libTomb[k] > out.libTomb[k]) out.libTomb[k] = remote.libTomb[k];
@@ -1111,10 +1247,10 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 5, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 6, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
-    plans: S.plans, activePlan: S.activePlan, routines: S.routines
+    plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas
   };
 }
 function dot(cls) {

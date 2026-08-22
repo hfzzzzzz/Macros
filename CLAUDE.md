@@ -13,7 +13,7 @@
 ## 仓库结构
 
 ```
-index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 1600 行）
+index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 1750 行）
 README.md    ← 只有一行标题
 CLAUDE.md    ← 本文件
 ```
@@ -51,7 +51,12 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `.chips` 本来就是横向滚动的，它「溢出」是设计如此，不是 bug。
 - 截图用 `--screenshot=<path>`；图片会按 `--window-size` 裁剪而不是缩放，所以窄图会**假装**成内容被切掉，别被骗。
 
-最近一次全量验证：114 项断言全通过，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、v4→v5 迁移不动老数据、常规摄入。装置本身没有入库（属于一次性工具），要复现照上面重建即可。
+**装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
+
+历史上跑过的两轮：
+
+- `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
+- `2026-08-03.2`（当前）：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
 
 ## 设计约束（改代码前先读）
 
@@ -79,6 +84,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `训练` | 周视图、当日计划打勾、动作编辑 sheet |
 | `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
 | `趋势` | 近 14 天条形图 |
+| `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
 | `动作进展` | `exSessions/metricOf/curveSVG/progressCard` |
 | `设置` | 体重系数、同步配置、数据导入导出 |
 | `records / tombstones` | `newId()` / `removeRec()` |
@@ -103,15 +109,16 @@ let meal    // 当前选中餐次
 let pending // review sheet 里待确认的条目数组
 let draft   // 正在编辑的分化 / 常规搭配副本，保存前不碰 S.plans / S.routines
 let trendEx // 进展曲线当前选中的动作名
+let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 ```
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 5`）
+### 数据模型（`S`，schema `v: 6`）
 
 ```js
 {
-  v: 5,
+  v: 6,
   weight: 70,                    // 兜底体重，只在 weights 为空时用
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
@@ -121,7 +128,8 @@ let trendEx // 进展曲线当前选中的动作名
               // c/p/f 是这一条的绝对克数（不是每份）
   workouts: [{ id, date, name, sets, reps, wt, dur, note, ts }],
               // 用不到的字段存 0 / ""；容量 = sets*reps*wt
-  weights:  { "2026-07-31": { v: 72.5, ts } },
+  weights:  { "2026-07-31": { v: 72.5, ts } },              // kg
+  meas:     { "2026-07-31": { arm, chest, waist, hip, ts } },// cm，字段可缺；全缺就不存这天
   lib:      { "鸡胸肉":  { c: 0,   p: 23.1, f: 1.9,  u: "g",  ts },   // 每 100 g
               "椰子奶":  { c: 4.5, p: 1.3,  f: 11.5, u: "ml", ts } }, // 每 250 ml
   tomb:     { "<被删记录的 id>": ts },                      // 墓碑，120 天后清理
@@ -169,7 +177,7 @@ let trendEx // 进展曲线当前选中的动作名
 | 字段 | 策略 |
 |---|---|
 | `entries` / `workouts` / `plans` / `routines` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
-| `weights` / `lib` | 按 key 逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
+| `weights` / `meas` / `lib` | 按 key（日期 / 食物名）逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
 | `tomb` / `libTomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 | 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
 
@@ -238,6 +246,16 @@ let trendEx // 进展曲线当前选中的动作名
 - 编辑分化时改的是 `draft`（`S.plans` 里那条的深拷贝），只有点「保存」才写回。`closeSheet()` 会清掉 `draft`。
 - `planDaySheet` 的 `grab()` **故意不过滤空名字的行**，否则删除按钮的下标会跟渲染时的下标错位；过滤只在离开该页和 `savePlan()` 时做。
 
+### 体重与身体维度
+
+`S.weights` 和 `S.meas` 都是「按日期存一条」，没有 id、没有墓碑，合并就是按日期逐条比 `ts`。删一天 = 把两个 map 里那天都 `delete` 掉。
+
+- 维度只有四项（`MEAS`：臂围 / 胸围 / 腰围 / 臀围），全部按厘米。想加项目就往 `MEAS` 里加一条，录入表单、chip、曲线都是照着它铺的，别的地方不用改。
+- `bodySheet(date)` 一次记体重 + 四围，**留空的项目不写也不覆盖**；一项都没填会被拦下。四围全空时不会留下空的 `meas` 记录（`migrate()` 也会顺手清掉历史上的空记录）。
+- 体重仍然是营养目标的输入（`weightOn()`），所以在这里改历史体重会改历史目标 —— 跟设置页那个输入框是同一份数据。
+- 三张曲线（体重 / 维度 / 动作进展）**共用 `curveSVG()` 和同一个 `[data-pt]` 事件**，靠 `data-pt="<key>|<i>"` 的 key 区分（`w` / `m` / `ex`），各自更新 `#wread` / `#mread` / `#exread`。再加图就沿用这个约定。
+- 变化量**刻意不判好坏**：减脂时体重降是好事，增肌时又反过来，App 不知道你的目标，所以不用 `.ok`/`.bad` 上色。动作进展那张图涨=好没歧义，保留着上色。
+
 ### 进展曲线
 
 `exSessions(name)` 把同一天同一动作的多条记录并成一次「训练课」，然后 `metricOf()` 按数据形态自动选指标：
@@ -267,7 +285,7 @@ let trendEx // 进展曲线当前选中的动作名
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.2"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
