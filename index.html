@@ -281,7 +281,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.3";
+const APP_VERSION = "2026-08-03.4";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -335,7 +335,7 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 6, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 7, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
     sync: { token: "", gistId: "", last: 0 }
@@ -376,6 +376,16 @@ function migrate(o) {
   if (!o.v || o.v < 6) {
     s.meas = (o.meas && typeof o.meas === "object") ? o.meas : {};
     s.v = 6;
+  }
+  if (!o.v || o.v < 7) {
+    // 目标体重从此独立。用升级前那套算法取一次当前值固化下来，
+    // 这样升级前后每日目标一模一样，只是以后改记录不再动它。
+    const ks = Object.keys(s.weights || {}).filter(k => k <= todayKey()).sort();
+    if (ks.length) {
+      const v = Number(s.weights[ks[ks.length - 1]].v);
+      if (isFinite(v) && v > 0) s.weight = v;
+    }
+    s.v = 7;
   }
   // 维度：只留认识的字段和正数，空记录整条丢掉
   const ms = {};
@@ -466,12 +476,15 @@ async function copyText(text) {
 }
 
 /* ---------------- computed ---------------- */
-function weightOn(date) {
-  const ks = Object.keys(S.weights).filter(k => k <= date).sort();
-  return ks.length ? S.weights[ks[ks.length - 1]].v : S.weight;
+/* 最近一条体重记录，只用于设置页的参考显示和「用最新记录」按钮 */
+function lastWeight() {
+  const ks = Object.keys(S.weights).filter(k => k <= todayKey()).sort();
+  return ks.length ? Number(S.weights[ks[ks.length - 1]].v) || 0 : 0;
 }
-function targets(date) {
-  const w = weightOn(date), c = w * S.kc, p = w * S.kp, f = w * S.kf;
+/* 目标体重只来自 S.weight（设置里手填），跟 S.weights 的体重记录彻底分开：
+   记录归记录，随便记不会动到营养目标。要同步过去得在设置里主动点一下。 */
+function targets() {
+  const w = S.weight, c = w * S.kc, p = w * S.kp, f = w * S.kf;
   return { c, p, f, kcal: c * KCAL.c + p * KCAL.p + f * KCAL.f, w };
 }
 function eatenOn(date) {
@@ -540,10 +553,10 @@ function gauge(cls, label, left, target, eaten) {
 }
 
 function renderToday() {
-  const t = targets(cursor), e = eatenOn(cursor), isT = cursor === todayKey();
+  const t = targets(), e = eatenOn(cursor), isT = cursor === todayKey();
   const ex = exOn(cursor);
   let h = `<div class="datebar"><button class="nav" id="prevd">‹</button>
-    <div class="d">${cursor}${isT ? " · 今天" : ""} · ${r1(t.w)}kg</div>
+    <div class="d">${cursor}${isT ? " · 今天" : ""} · 目标 ${r1(t.w)}kg</div>
     <button class="nav" id="nextd">›</button></div>
   <div class="hero">${gauge("c", "碳水", t.c - e.c, t.c, e.c)}${gauge("p", "蛋白", t.p - e.p, t.p, e.p)}${gauge("f", "脂肪", t.f - e.f, t.f, e.f)}</div>
   <p class="hero-cap">还可摄入 (g)</p>
@@ -915,7 +928,7 @@ function renderTrend() {
     </div><div class="card">`;
   let n = 0, sc = 0, sp = 0, sf = 0, td = 0;
   for (const d of days) {
-    const t = targets(d), e = eatenOn(d), ex = exOn(d);
+    const t = targets(), e = eatenOn(d), ex = exOn(d);
     const has = e.c + e.p + e.f > 0;
     if (has) { n++; sc += e.c / t.c; sp += e.p / t.p; sf += e.f / t.f; }
     if (ex.length) td++;
@@ -1056,6 +1069,9 @@ function measM(k) { return { k: "v", lbl: (MEAS.find(x => x.k === k) || MEAS[0])
 function bodyCards() {
   let h = `<div class="card"><h4>体重</h4>
     ${seriesBlock(weightSeries(), M_KG, "w", "var(--ink)", "还没有体重记录")}
+    <div class="readout" style="font-family:var(--sans);font-size:12px;color:var(--ink-faint);margin-top:6px">
+      这里只是记录 · 饮食目标按设置里的 <b>${r1(S.weight)}</b> kg 算，不受影响
+    </div>
     <div class="btnrow"><button class="pri" id="b_body">+ 记录体重 / 维度</button></div></div>`;
   if (MEAS.every(x => !measSeries(x.k).length) && !Object.keys(S.meas).length) return h;
   if (!MEAS.some(x => x.k === trendMeas)) trendMeas = MEAS[0].k;
@@ -1102,7 +1118,7 @@ function bodySheet(date) {
     const now = Date.now();
     const wv = num("bd_w");
     let touched = 0;
-    if (wv) { S.weights[dd] = { v: wv, ts: now }; if (dd >= todayKey()) S.weight = wv; touched++; }
+    if (wv) { S.weights[dd] = { v: wv, ts: now }; touched++; }   // 只写记录，不动目标体重
     const one = { ts: now };
     let any = false;
     for (const x of MEAS) { const v = num("bd_" + x.k); if (v) { one[x.k] = v; any = true; } }
@@ -1141,21 +1157,29 @@ function progressCard() {
 
 /* ---------------- 设置 ---------------- */
 function renderSettings() {
-  const t = targets(todayKey());
+  const t = targets(), lw = lastWeight();
   const sy = S.sync;
   const lastTxt = sy.last ? new Date(sy.last).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "从未";
   scroll.innerHTML = `
   <div class="datebar"><div class="d">设置</div></div>
 
-  <div class="card"><h4>体重与系数</h4>
-    <div class="fld"><label>体重<small>记入今天；历史日期按当日体重算目标</small></label>
-      <input id="s_w" type="number" inputmode="decimal" step="0.1" value="${weightOn(todayKey())}"></div>
+  <div class="card"><h4>饮食目标</h4>
+    <div class="fld"><label>目标体重 KG<small>只用来乘系数算目标，跟体重记录互不影响</small></label>
+      <input id="s_w" type="number" inputmode="decimal" step="0.1" value="${r1(S.weight)}"></div>
     <div class="fld"><label>碳水 g/kg</label><input id="s_kc" type="number" inputmode="decimal" step="0.1" value="${S.kc}"></div>
     <div class="fld"><label>蛋白 g/kg</label><input id="s_kp" type="number" inputmode="decimal" step="0.1" value="${S.kp}"></div>
     <div class="fld"><label>脂肪 g/kg</label><input id="s_kf" type="number" inputmode="decimal" step="0.1" value="${S.kf}"></div>
     <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g<br>
       <b>${nf(t.kcal)}</b> kcal · <b>${r1(t.kcal / t.w)}</b> kcal/kg</div>
-    <div class="readout" style="margin-top:6px">体重 <b>${Object.keys(S.weights).length}</b> 条 · 维度 <b>${Object.keys(S.meas).length}</b> 条</div>
+    ${lw ? `<div class="readout" style="margin-top:6px">最近一次体重记录 <b>${r1(lw)}</b> kg</div>${
+      Math.abs(lw - S.weight) > 0.05 ? `<div class="btnrow"><button id="s_wsync">目标体重改用 ${r1(lw)} kg</button></div>` : ""}` : ""}
+  </div>
+
+  <div class="card"><h4>身体记录</h4>
+    <div class="readout">体重 <b>${Object.keys(S.weights).length}</b> 条 · 维度 <b>${Object.keys(S.meas).length}</b> 条</div>
+    <div class="readout" style="font-family:var(--sans);font-size:12.5px;line-height:1.6;color:var(--ink-faint);margin-top:6px">
+      这里只是记录和画曲线，随便记不会动到上面的饮食目标。
+    </div>
     <div class="btnrow"><button id="s_body">记录体重 / 维度</button></div>
   </div>
 
@@ -1171,7 +1195,7 @@ function renderSettings() {
     </div>
     <div class="readout" style="font-family:var(--sans);font-size:12px;line-height:1.6;color:var(--ink-faint);margin-top:9px">
       在电脑上打开同一个网址，填入相同的 Token 与 Gist ID，两边就会自动合并。
-      同步内容只有饮食、训练、体重、食物库和系数——API key 和 Token 不会被上传。
+      同步内容只有饮食、训练、体重维度、食物库和系数——API key 和 Token 不会被上传。
     </div>
   </div>
 
@@ -1207,7 +1231,7 @@ function renderSettings() {
 
   const q = id => scroll.querySelector(id);
   const bind = (id, fn) => { const el = q(id); el.onchange = () => { fn(el); touchSettings(); save(); render(); queueSync(); }; };
-  bind("#s_w", el => { const v = parseFloat(el.value); if (v > 0) { S.weight = v; S.weights[todayKey()] = { v, ts: Date.now() }; } });
+  bind("#s_w", el => { const v = parseFloat(el.value); if (v > 0) S.weight = v; });   // 只动目标体重，不写记录
   bind("#s_kc", el => S.kc = parseFloat(el.value) || 0);
   bind("#s_kp", el => S.kp = parseFloat(el.value) || 0);
   bind("#s_kf", el => S.kf = parseFloat(el.value) || 0);
@@ -1217,6 +1241,11 @@ function renderSettings() {
   q("#y_now").onclick = () => syncNow(false);
   q("#b_prompt").onclick = async () => toast(await copyText(SYS) ? "已复制，去 claude.ai 建项目粘进指令栏" : "复制失败");
   q("#s_body").onclick = () => bodySheet(todayKey());
+  const ws = q("#s_wsync");
+  if (ws) ws.onclick = () => {
+    S.weight = lastWeight(); touchSettings(); save(); render(); queueSync();
+    toast("目标体重已改为 " + r1(S.weight) + " kg");
+  };
   q("#b_lib").onclick = showLib;
   q("#b_ro").onclick = routineSheet;
   q("#b_csv").onclick = exportCSV;
@@ -1295,7 +1324,7 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 6, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 7, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
     plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas
@@ -1893,9 +1922,9 @@ function download(name, text, type) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
 }
 function exportCSV() {
-  const head = "日期,餐次,食物,分量,单位,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,体重kg\n";
+  const head = "日期,餐次,食物,分量,单位,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,目标体重kg\n";
   const rows = S.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(e => {
-    const t = targets(e.date);
+    const t = targets();
     return [e.date, e.meal, '"' + e.name.replace(/"/g, '""') + '"', r1(e.g), e.u || "g", r1(e.c), r1(e.p), r1(e.f),
       r0(e.c * 4 + e.p * 4 + e.f * 9), r1(t.c), r1(t.p), r1(t.f), r1(t.w)].join(",");
   }).join("\n");

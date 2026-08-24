@@ -53,11 +53,12 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的三轮：
+历史上跑过的四轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
 - `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
-- `2026-08-03.3`（当前）：58 项，专攻训练侧模块化 —— 六个部位的动作清单逐条核对、预设由部位生成且不污染常量、部位选择器展开/收起/整组加入/不重复、稳定重量的读取与打勾优先级、容量在六处显示中确实消失；外加一轮冒烟。
+- `2026-08-03.3`：58 项，专攻训练侧模块化 —— 六个部位的动作清单逐条核对、预设由部位生成且不污染常量、部位选择器展开/收起/整组加入/不重复、稳定重量的读取与打勾优先级、容量在六处显示中确实消失；外加一轮冒烟。
+- `2026-08-03.4`（当前）：41 项，专攻目标体重与体重记录解耦 —— 改记录不动目标、v6→v7 迁移后目标一模一样、两处录入互不写对方、设置页两张卡、`weight` 与 `weights` 各走各的合并策略；外加一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -79,7 +80,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、`PARTS` 动作目录、内置分化预设 |
 | `state` | `blank()` / `migrate()` / `load()` / `save()` |
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
-| `computed` | `weightOn()` / `targets()` / `eatenOn()` / `exOn()` / `workWt()` |
+| `computed` | `lastWeight()` / `targets()` / `eatenOn()` / `exOn()` / `workWt()` |
 | `render` | `render()` 总调度 + 四个 tab 的渲染函数 |
 | `训练计划` | `curPlan/planDay/planStat/doneRec/workWt/togglePlanItem` |
 | `部位选择器` | `mountPartPicker()` —— 两级 chip，加动作和排分化共用 |
@@ -88,7 +89,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `趋势` | 近 14 天条形图 |
 | `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
 | `动作进展` | `exSessions/metricOf/curveSVG/progressCard` |
-| `设置` | 体重系数、同步配置、数据导入导出 |
+| `设置` | 饮食目标（目标体重+系数）、身体记录入口、同步配置、数据导入导出 |
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
 | `Gist sync` | GitHub API 封装、创建 gist、`syncNow()`、`queueSync()` |
@@ -116,12 +117,12 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 6`）
+### 数据模型（`S`，schema `v: 7`）
 
 ```js
 {
-  v: 6,
-  weight: 70,                    // 兜底体重，只在 weights 为空时用
+  v: 7,
+  weight: 70,                    // 目标体重：只用来算营养目标，跟 weights 无关
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
 
@@ -150,8 +151,23 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 ```
 
 计算规则：
-- 目标 = **当日体重** × 系数。`weightOn(date)` 取 `<= date` 的最近一条体重，所以改历史体重会改历史目标。
+- 目标 = `S.weight` × 系数，跟日期无关。**体重记录不参与计算**，见下面一节。
 - 热量 = `c*4 + p*4 + f*9`（`KCAL` 常量）。
+
+### 目标体重 vs 体重记录（两回事，别再合起来）
+
+这两个东西名字像，但**刻意是分开的**：
+
+| | 存在哪 | 谁在用 | 谁能改 |
+|---|---|---|---|
+| **目标体重** | `S.weight`（单个数） | `targets()` 算三大营养素目标 | 只有设置页「饮食目标」里那个输入框 |
+| **体重记录** | `S.weights`（日期 → 体重） | 趋势页的体重曲线 | 只有 `bodySheet()` |
+
+- **`bodySheet()` 绝不写 `S.weight`，设置页那个框也绝不写 `S.weights`。** 以前是耦合的（记一次体重就顺手改了目标，历史日期还会按当日体重反算历史目标），`2026-08-03.4` 拆开了。别再加回任何一边的联动。
+- 要让目标跟上最新体重，得在设置页**主动点**「目标体重改用 X kg」——这个按钮只在两者相差超过 0.05 kg 时出现。
+- `targets()` **不接受日期参数**了，所有日期的目标都一样。趋势页的达成率、CSV 的目标列都跟着变成常量。
+- `lastWeight()` 只是给设置页做参考显示和上面那个按钮用的，别拿它去算目标。
+- 迁移 `v6 → v7` 时用老算法取了一次当时的值写进 `S.weight`，所以**升级前后每日目标完全一致**，用户不会突然发现目标变了。
 
 ### 单位：一份 = 100 g 或 250 ml
 
@@ -305,7 +321,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.3"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.4"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
