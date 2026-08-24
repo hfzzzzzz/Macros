@@ -53,12 +53,13 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的四轮：
+历史上跑过的五轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
 - `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
 - `2026-08-03.3`：58 项，专攻训练侧模块化 —— 六个部位的动作清单逐条核对、预设由部位生成且不污染常量、部位选择器展开/收起/整组加入/不重复、稳定重量的读取与打勾优先级、容量在六处显示中确实消失；外加一轮冒烟。
-- `2026-08-03.4`（当前）：41 项，专攻目标体重与体重记录解耦 —— 改记录不动目标、v6→v7 迁移后目标一模一样、两处录入互不写对方、设置页两张卡、`weight` 与 `weights` 各走各的合并策略；外加一轮冒烟。
+- `2026-08-03.4`：41 项，专攻目标体重与体重记录解耦 —— 改记录不动目标、v6→v7 迁移后目标一模一样、两处录入互不写对方、设置页两张卡、`weight` 与 `weights` 各走各的合并策略；外加一轮冒烟。
+- `2026-08-03.5`（当前）：39 项，专攻每日锻炼输出 —— 文本清单的编号/组次/有氧/备注/空日期各种形态、当天 CSV 能被自家 parseCSV 读回来（含逗号引号的动作名）、两处入口的出现条件、`navigator.share` 有无时的降级；外加一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -85,6 +86,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `训练计划` | `curPlan/planDay/planStat/doneRec/workWt/togglePlanItem` |
 | `部位选择器` | `mountPartPicker()` —— 两级 chip，加动作和排分化共用 |
 | `训练` | 周视图、当日计划打勾、动作编辑 sheet |
+| `每日锻炼输出` | `dayText()` / `dayCSV()` / `exportDaySheet()` |
 | `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
 | `趋势` | 近 14 天条形图 |
 | `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
@@ -264,6 +266,20 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 - 训练页每行右侧显示这个重量：做完了显示实做值（亮色），没做显示计划值或历史值（`.vol.ghost` 暗色）作提示。
 - 进展曲线的默认指标就是它（`metricOf` 的 `top`）。**曾经是 Epley 预估 1RM 和训练容量，都已经去掉了** —— 别再加回来。
 
+### 每日锻炼输出 / WHOOP（别再去试直接导入了）
+
+`exportDaySheet(date)` 把当天练的排成一份纯文本清单（`dayText()`），外加当天 CSV（`dayCSV()`）。入口两个：训练页每天右上的「输出」（只在当天有记录时出现）、今日页的训练汇总行。
+
+**为什么不做直接导入 WHOOP** —— 查证过，三条路都堵死：
+
+1. **官方 API 是只读的。** `developer.whoop.com` 的 changelog 到 `2025-11-01` 为止没有任何 POST/写入端点。
+2. **Strength Trainer 的明细压根不在 API 里。** `2024-05-01` 那条更新只是让 Strength Trainer 作为一种活动类型出现在 `/workout` 里；组数、次数、重量既读不到也写不进。
+3. **逆向的私有接口对这个 App 也没用。** 静态页从 GitHub Pages 跨域调 `api.prod.whoop.com` 会被 CORS 拦掉，而且要存 WHOOP 凭据 —— 跟[设计约束](#设计约束)的第 2、3 条直接冲突。
+
+所以这里只做「让手动录入尽量快」：清单顺序就是 WHOOP 里的录入顺序，`navigator.share` 可用时给分享按钮（iOS 上直接开系统分享面板），不可用就只留复制。**注意分享被用户取消时 `navigator.share` 会 reject，要吞掉，别弹失败提示。**
+
+哪天 WHOOP 真开了写入端点，再回来看这一节。
+
 ### 训练计划怎么工作
 
 核心设计：**「完成」不是一个字段，而是「当天存在同名的 `workouts` 记录」**（`doneRec(date, name)`）。
@@ -321,7 +337,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.4"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.5"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。

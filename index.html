@@ -281,7 +281,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.4";
+const APP_VERSION = "2026-08-03.5";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -564,8 +564,8 @@ function renderToday() {
     <div class="k2">${nf(e.kcal)} <span>/ ${nf(t.kcal)} kcal · 余 ${nf(t.kcal - e.kcal)}</span></div></div>`;
 
   if (ex.length) {
-    h += `<div class="kcal" style="margin-top:-8px"><div class="k1" style="color:var(--lift)">训练</div>
-      <div class="k2">${ex.length} 个动作 <span>${ex.reduce((a, w) => a + (w.sets || 0), 0)} 组</span></div></div>`;
+    h += `<div class="kcal" style="margin-top:-8px" data-xd="${cursor}"><div class="k1" style="color:var(--lift)">训练</div>
+      <div class="k2">${ex.length} 个动作 <span>${ex.reduce((a, w) => a + (w.sets || 0), 0)} 组 · 输出 ›</span></div></div>`;
   }
 
   const rows = S.entries.filter(x => x.date === cursor);
@@ -587,6 +587,7 @@ function renderToday() {
   scroll.querySelector("#prevd").onclick = () => { cursor = shiftDay(cursor, -1); render(); };
   scroll.querySelector("#nextd").onclick = () => { cursor = shiftDay(cursor, 1); render(); };
   scroll.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { removeRec("entries", b.dataset.del); render(); });
+  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd));
   scroll.querySelectorAll("[data-eedit]").forEach(b => b.onclick = () =>
     manualSheet(S.entries.find(x => x.id === b.dataset.eedit)));
 }
@@ -646,7 +647,9 @@ function renderTrain() {
     h += `<div class="dayblock"><div class="dayhead">
       <div class="dh1${d === tk ? " istoday" : ""}">${DOW[i]}<em>${d.slice(5)}</em></div>
       ${st ? `<span class="daytag">${esc(st.day.name || "训练")} ${st.done}/${st.total}</span>` : ""}
-      <button class="add" data-add="${d}" style="margin-left:auto">+ 添加动作</button></div>`;
+      <span style="margin-left:auto;display:flex;gap:6px;flex:none">
+        ${ex.length ? `<button class="add" data-xd="${d}">输出</button>` : ""}
+        <button class="add" data-add="${d}">+ 动作</button></span></div>`;
     if (st) st.day.items.forEach((it, j) => {
       const rec = doneRec(d, it.name);
       if (rec) taken[rec.id] = 1;
@@ -681,10 +684,67 @@ function renderTrain() {
     exSheet(null, x.d, { name: x.it.name, sets: x.it.sets, reps: x.it.reps, wt: x.it.wt || workWt(x.it.name, x.d) });
   });
   scroll.querySelectorAll("[data-add]").forEach(b => b.onclick = () => exSheet(null, b.dataset.add));
+  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd));
   scroll.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
     exSheet(S.workouts.find(w => w.id === b.dataset.edit), null);
   });
 }
+/* ---------------- 每日锻炼输出 ----------------
+   WHOOP 的开放接口是只读的，Strength Trainer 的组次重量既读不到也写不进，
+   所以没法直接导入 —— 这里做的是把当天练的排成录入顺序，方便照着填。 */
+function dowOf(date) {
+  const [y, m, d] = date.split("-").map(Number);
+  return DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
+}
+function dayText(date) {
+  const ex = exOn(date), st = planStat(date);
+  const head = date + " " + dowOf(date) + (st && st.day.name ? " · " + st.day.name : "");
+  if (!ex.length) return head + "\n（当天没有训练记录）";
+  const lines = ex.map((w, i) => {
+    const b = [];
+    if (w.sets && w.reps) b.push(w.sets + "×" + w.reps);
+    else if (w.sets) b.push(w.sets + " 组");
+    if (w.wt) b.push("@" + r1(w.wt) + "kg");
+    if (w.dur) b.push(r1(w.dur) + "min");
+    if (w.note) b.push(w.note);
+    return (i + 1) + ". " + w.name + (b.length ? "  " + b.join(" ") : "");
+  });
+  const sets = ex.reduce((a, w) => a + (w.sets || 0), 0);
+  return head + "\n" + lines.join("\n") + "\n—— " + ex.length + " 个动作 · " + sets + " 组";
+}
+function dayCSV(date) {
+  const head = "日期,部位,动作,组数,次数,重量kg,时长min,备注\n";
+  const rows = exOn(date).map(w => [date, PART_OF[w.name] || "",
+    '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "", w.wt || "", w.dur || "",
+    '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",")).join("\n");
+  return "\ufeff" + head + rows;
+}
+function exportDaySheet(date) {
+  const ex = exOn(date);
+  const canShare = typeof navigator.share === "function";
+  openSheet(`<h3>锻炼输出</h3>
+    <div class="sh-sub">${date} ${dowOf(date)} · ${ex.length} 个动作</div>
+    <div class="step"><b>1</b><div>复制这份清单（可以直接改）
+      <textarea id="xd_txt" spellcheck="false" style="height:150px">${esc(dayText(date))}</textarea></div></div>
+    <div class="step"><b>2</b><div>打开 WHOOP → Strength Trainer，照着清单把动作和组次重量填进去。<br>
+      <b>WHOOP 的开放接口是只读的</b>，Strength Trainer 的组次重量既读不到也写不进，
+      外部程序没有任何受支持的方式能直接导进去，这一步只能手动。</div></div>
+    <div class="btnrow">
+      <button id="xd_copy">复制清单</button>
+      ${canShare ? `<button id="xd_share">分享…</button>` : ""}
+      <button id="xd_csv">当天 CSV</button>
+    </div>
+    <div class="sheetact"><button class="go" id="xd_done">完成</button></div>`);
+  const g = id => document.getElementById(id);
+  g("xd_copy").onclick = async () => toast(await copyText(g("xd_txt").value) ? "已复制，去 WHOOP 照着填" : "复制失败，请长按文本框手动复制");
+  g("xd_csv").onclick = () => download("macros_训练_" + date + ".csv", dayCSV(date), "text/csv");
+  if (canShare) g("xd_share").onclick = async () => {
+    // 用户在系统分享面板里点取消也会 reject，别当成失败弹提示
+    try { await navigator.share({ title: "锻炼 " + date, text: g("xd_txt").value }); } catch (e) {}
+  };
+  g("xd_done").onclick = closeSheet;
+}
+
 function planDesc(it) {
   const bits = [];
   if (PART_OF[it.name]) bits.push(PART_OF[it.name]);
