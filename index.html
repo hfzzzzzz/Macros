@@ -281,7 +281,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.5";
+const APP_VERSION = "2026-08-03.6";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -335,7 +335,7 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 7, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 8, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
     sync: { token: "", gistId: "", last: 0 }
@@ -386,6 +386,13 @@ function migrate(o) {
       if (isFinite(v) && v > 0) s.weight = v;
     }
     s.v = 7;
+  }
+  if (!o.v || o.v < 8) {
+    // 组级记录：把老的 sets×{reps,wt} 摊成每组一条，汇总值原样不动，
+    // 所以升级前后总组数、稳定重量、曲线、导出全都一模一样
+    s.workouts = (s.workouts || []).map(w =>
+      Array.isArray(w.ss) ? w : Object.assign({}, w, { ss: setsOf(w) }));
+    s.v = 8;
   }
   // 维度：只留认识的字段和正数，空记录整条丢掉
   const ms = {};
@@ -494,6 +501,47 @@ function eatenOn(date) {
   return t;
 }
 function exOn(date) { return S.workouts.filter(w => w.date === date); }
+/* ---------------- 组级记录 ----------------
+   ss = [{reps, wt}, …] 是每组的真相；sets / reps / wt 降级成从它算出来的汇总值，
+   留着是为了让按动作汇总的地方（总组数、进展曲线、稳定重量、CSV）一行都不用改。
+   **动过 ss 之后必须调一次 reSum(w)**，否则汇总值会跟明细对不上。 */
+function setsOf(w) {
+  if (Array.isArray(w.ss)) return w.ss;
+  const n = Math.max(0, parseInt(w.sets, 10) || 0), out = [];   // 兜底：把老记录摊平
+  for (let i = 0; i < n; i++) out.push({ reps: w.reps || 0, wt: w.wt || 0 });
+  return out;
+}
+/* 出现次数最多的值，并列取大的；0 不参与（没上重量、没记次数的组不算进来） */
+function modeOf(arr) {
+  const c = {};
+  let best = 0, bn = 0;
+  for (const v of arr) {
+    if (!(v > 0)) continue;
+    c[v] = (c[v] || 0) + 1;
+    if (c[v] > bn || (c[v] === bn && v > best)) { best = v; bn = c[v]; }
+  }
+  return best;
+}
+function reSum(w) {
+  const ss = setsOf(w);
+  w.ss = ss;
+  w.sets = ss.length;
+  w.reps = modeOf(ss.map(x => x.reps));   // 典型每组次数
+  w.wt = modeOf(ss.map(x => x.wt));       // 稳定做组的重量
+  return w;
+}
+function totalReps(w) { return setsOf(w).reduce((a, x) => a + (x.reps || 0), 0); }
+/* 每组明细的紧凑写法：各组一致就写 4×8 @62.5kg，不一致就逐组列 */
+function setsText(w) {
+  const ss = setsOf(w);
+  if (!ss.length) return "";
+  const a = ss[0];
+  if (ss.every(x => x.reps === a.reps && x.wt === a.wt))
+    return (a.reps ? ss.length + "×" + a.reps : ss.length + " 组") + (a.wt ? " @" + r1(a.wt) + "kg" : "");
+  return ss.map(x => (x.reps || "?") + (x.wt ? "@" + r1(x.wt) : "")).join(" · ");
+}
+function setsCSV(w) { return setsOf(w).map(x => (x.reps || 0) + "@" + (x.wt || 0)).join("|"); }
+
 /* 某个动作当前的「稳定做组重量」：最近一次真正上过重量的那次 */
 function workWt(name, before) {
   let best = null;
@@ -524,10 +572,10 @@ function togglePlanItem(date, it) {
   const hit = doneRec(date, it.name);
   if (hit) { removeRec("workouts", hit.id); toast("已取消 " + it.name); }
   else {
-    S.workouts.push({
-      id: newId(), date, name: it.name, sets: it.sets || 0, reps: it.reps || 0,
-      wt: it.wt || workWt(it.name, date), dur: 0, note: "", ts: Date.now()
-    });
+    // 按计划的组数铺成每组一条，重量优先用计划里设的稳定重量
+    const wt = it.wt || workWt(it.name, date), ss = [];
+    for (let i = 0; i < (it.sets || 0); i++) ss.push({ reps: it.reps || 0, wt });
+    S.workouts.push(reSum({ id: newId(), date, name: it.name, ss, dur: 0, note: "", ts: Date.now() }));
     save(); queueSync();
   }
   render();
@@ -702,9 +750,8 @@ function dayText(date) {
   if (!ex.length) return head + "\n（当天没有训练记录）";
   const lines = ex.map((w, i) => {
     const b = [];
-    if (w.sets && w.reps) b.push(w.sets + "×" + w.reps);
-    else if (w.sets) b.push(w.sets + " 组");
-    if (w.wt) b.push("@" + r1(w.wt) + "kg");
+    const st = setsText(w);
+    if (st) b.push(st);
     if (w.dur) b.push(r1(w.dur) + "min");
     if (w.note) b.push(w.note);
     return (i + 1) + ". " + w.name + (b.length ? "  " + b.join(" ") : "");
@@ -713,9 +760,10 @@ function dayText(date) {
   return head + "\n" + lines.join("\n") + "\n—— " + ex.length + " 个动作 · " + sets + " 组";
 }
 function dayCSV(date) {
-  const head = "日期,部位,动作,组数,次数,重量kg,时长min,备注\n";
+  const head = "日期,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
   const rows = exOn(date).map(w => [date, PART_OF[w.name] || "",
-    '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "", w.wt || "", w.dur || "",
+    '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "", w.wt || "",
+    '"' + setsCSV(w) + '"', w.dur || "",
     '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",")).join("\n");
   return "\ufeff" + head + rows;
 }
@@ -755,9 +803,8 @@ function planDesc(it) {
 }
 function descOf(w) {
   const bits = [];
-  if (w.sets && w.reps) bits.push(w.sets + "×" + w.reps);
-  else if (w.sets) bits.push(w.sets + " 组");
-  if (w.wt) bits.push("@" + r1(w.wt) + "kg");
+  const st = setsText(w);
+  if (st) bits.push(st);
   if (w.dur) bits.push(r1(w.dur) + " min");
   if (w.note) bits.push(w.note);
   return esc(bits.join("  ")) || "—";
@@ -808,11 +855,8 @@ function exSheet(rec, date, pre) {
     recents.map(n => `<button class="chip" data-rn="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
   h += `<div class="frow"><div class="fcell text" style="flex:1">
       <label>动作名称</label><input id="e_name" value="${esc(w.name)}" placeholder="深蹲 / 跑步"></div></div>
-    <div class="frow">
-      <div class="fcell"><label>组数</label><input id="e_sets" type="number" inputmode="numeric" value="${w.sets || ""}" placeholder="–"></div>
-      <div class="fcell"><label>次数</label><input id="e_reps" type="number" inputmode="numeric" value="${w.reps || ""}" placeholder="–"></div>
-      <div class="fcell"><label>重量 KG</label><input id="e_wt" type="number" inputmode="decimal" step="0.5" value="${w.wt || ""}" placeholder="–"></div>
-    </div>
+    <div class="subhead">每组的次数和重量</div>
+    <div class="daylist" id="esets"></div>
     <div class="frow">
       <div class="fcell"><label>时长 MIN</label><input id="e_dur" type="number" inputmode="decimal" value="${w.dur || ""}" placeholder="–"></div>
       <div class="fcell text" style="flex:2"><label>备注</label><input id="e_note" value="${esc(w.note || "")}" placeholder="RPE 8 / 力竭"></div>
@@ -823,28 +867,70 @@ function exSheet(rec, date, pre) {
       <button class="go" id="e_save">保存</button></div>`;
   openSheet(h);
   const g = id => document.getElementById(id);
+  // 每组明细单独放一份副本，增删组时只重画列表，不碰已填好的名称/时长/备注
+  exSets = setsOf(w).map(x => ({ reps: x.reps || 0, wt: x.wt || 0 }));
+  mountSetList();
   document.querySelectorAll("[data-rn]").forEach(b => b.onclick = () => { g("e_name").value = b.dataset.rn; });
-  // 从目录选中动作时，顺手把稳定重量和常用组次带出来
+  // 从目录选中动作时，没填过组就按 3×10 铺开，重量带出这个动作的稳定重量
   if (!rec) mountPartPicker("ppick", n => {
     g("e_name").value = n;
-    if (!g("e_sets").value) g("e_sets").value = 3;
-    if (!g("e_reps").value) g("e_reps").value = 10;
-    const wt = workWt(n);
-    if (wt && !g("e_wt").value) g("e_wt").value = r1(wt);
+    if (!exSets.length) {
+      const wt = workWt(n);
+      for (let i = 0; i < 3; i++) exSets.push({ reps: 10, wt });
+      mountSetList();
+    }
   });
   g("e_cancel").onclick = closeSheet;
   if (rec) g("e_del").onclick = () => { removeRec("workouts", rec.id); closeSheet(); render(); };
   g("e_save").onclick = () => {
     const name = g("e_name").value.trim();
     if (!name) { toast("动作名称不能为空"); return; }
+    grabSets();
     const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
-    const body = {
-      date: w.date, name, sets: num("e_sets"), reps: num("e_reps"),
-      wt: num("e_wt"), dur: num("e_dur"), note: g("e_note").value.trim(), ts: Date.now()
-    };
+    const body = reSum({
+      date: w.date, name, ss: exSets.map(x => ({ reps: x.reps || 0, wt: x.wt || 0 })),
+      dur: num("e_dur"), note: g("e_note").value.trim(), ts: Date.now()
+    });
+    if (!body.sets && !body.dur) { toast("至少加一组，或者填个时长"); return; }
     if (rec) Object.assign(rec, body);
     else S.workouts.push(Object.assign({ id: newId() }, body));
     save(); closeSheet(); render(); queueSync();
+  };
+}
+
+/* ---------------- 每组编辑 ---------------- */
+let exSets = [];
+function grabSets() {
+  document.querySelectorAll("[data-sr]").forEach(el => {
+    const v = parseInt(el.value, 10); exSets[+el.dataset.sr].reps = isFinite(v) && v > 0 ? v : 0;
+  });
+  document.querySelectorAll("[data-sw]").forEach(el => {
+    const v = parseFloat(el.value); exSets[+el.dataset.sw].wt = isFinite(v) && v > 0 ? v : 0;
+  });
+}
+function mountSetList() {
+  const el = document.getElementById("esets");
+  if (!el) return;
+  let h = "";
+  exSets.forEach((s, i) => {
+    h += `<div class="item"><div class="it1" style="margin-bottom:0">
+      <span style="flex:none;width:44px;font-size:12.5px;color:var(--ink-mute)">第 ${i + 1} 组</span>
+      <span class="gwrap"><input class="gm sm" data-sr="${i}" type="number" inputmode="numeric" value="${s.reps || ""}" placeholder="–"><em>次</em></span>
+      <span class="gwrap" style="flex:1"><input class="gm" data-sw="${i}" type="number" inputmode="decimal" step="0.5" value="${s.wt || ""}" placeholder="–"><em>kg</em></span>
+      <button class="drop" data-sx="${i}">×</button></div></div>`;
+  });
+  if (!exSets.length) h += `<div class="dayempty" style="text-align:center;padding:10px 0">还没有组 · 点下面加一组<br>纯有氧可以不加组，只填时长</div>`;
+  h += `<div class="btnrow" style="margin-top:2px"><button id="e_addset">+ 加一组${
+    exSets.length ? "（沿用上一组）" : ""}</button></div>`;
+  el.innerHTML = h;
+  el.querySelectorAll("[data-sx]").forEach(b => b.onclick = () => {
+    grabSets(); exSets.splice(+b.dataset.sx, 1); mountSetList();
+  });
+  document.getElementById("e_addset").onclick = () => {
+    grabSets();
+    const l = exSets[exSets.length - 1];
+    exSets.push(l ? { reps: l.reps, wt: l.wt } : { reps: 10, wt: 0 });
+    mountSetList();
   };
 }
 
@@ -1039,7 +1125,7 @@ function exSessions(name) {
   for (const w of S.workouts) {
     if (w.name !== name) continue;
     const s = by[w.date] || (by[w.date] = { date: w.date, top: 0, sets: 0, reps: 0, dur: 0 });
-    s.sets += w.sets || 0; s.reps += (w.sets || 0) * (w.reps || 0); s.dur += w.dur || 0;
+    s.sets += w.sets || 0; s.reps += totalReps(w); s.dur += w.dur || 0;
     if ((w.wt || 0) > s.top) s.top = w.wt;   // 当天做组用的重量
   }
   return Object.values(by).sort((a, b) => a.date < b.date ? -1 : 1);
@@ -1384,7 +1470,7 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 7, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 8, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
     plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas
@@ -1991,12 +2077,13 @@ function exportCSV() {
   download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }
 function exportWorkoutCSV() {
-  const head = "日期,星期,部位,动作,组数,次数,重量kg,时长min,备注\n";
+  const head = "日期,星期,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
   const rows = S.workouts.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(w => {
     const [y, m, d] = w.date.split("-").map(Number);
     const dw = DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
     return [w.date, dw, PART_OF[w.name] || "", '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
-      w.wt || "", w.dur || "", '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
+      w.wt || "", '"' + setsCSV(w) + '"', w.dur || "",
+      '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
   }).join("\n");
   download("macros_training_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }
