@@ -289,7 +289,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.7";
+const APP_VERSION = "2026-08-03.8";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -855,12 +855,10 @@ function mountPartPicker(id, onPick, onAll) {
 }
 function exSheet(rec, date, pre) {
   const w = rec || Object.assign({ name: "", sets: "", reps: "", wt: "", dur: "", note: "", date: date }, pre || {});
-  const recents = exNames();
   let h = `<h3>${rec ? "编辑动作" : "添加动作"}</h3>
-    <div class="sh-sub">${w.date} · 选部位挑动作，或直接手填；只填用得上的字段</div>`;
+    <div class="sh-sub">${w.date} · 点部位挑动作，或直接在下面手填名字</div>`;
+  // 动作只从部位目录里出，不再另外列「最近用过」——目录外的动作手填名字
   if (!rec) h += `<div id="ppick"></div>`;
-  if (!rec && recents.length) h += `<div class="chips" style="margin-bottom:10px">${
-    recents.map(n => `<button class="chip" data-rn="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
   h += `<div class="frow"><div class="fcell text" style="flex:1">
       <label>动作名称</label><input id="e_name" value="${esc(w.name)}" placeholder="深蹲 / 跑步"></div></div>
     <div class="subhead">每组的次数和重量</div>
@@ -879,7 +877,6 @@ function exSheet(rec, date, pre) {
   // 每组明细单独放一份副本，增删组时只重画列表，不碰已填好的名称/时长/备注
   exSets = setsOf(w).map(x => ({ reps: x.reps || 0, wt: x.wt || 0 }));
   mountSetList();
-  document.querySelectorAll("[data-rn]").forEach(b => b.onclick = () => { g("e_name").value = b.dataset.rn; });
   // 从目录选中动作时，没填过组就按 3×10 铺开，重量带出这个动作的稳定重量
   if (!rec) mountPartPicker("ppick", n => {
     g("e_name").value = n;
