@@ -131,6 +131,14 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .pick.on{border-color:var(--lift);border-width:5.5px}
 .item .it1 input.gm.sm{width:34px}
 .daylist .item{margin-bottom:7px}
+/* 每组编辑：行紧凑一点，且列表整体要跟下面的「时长/备注」拉开距离，
+   不然 .frow 只有 margin-bottom，两块带底色的区域会贴死看着像重叠 */
+#esets{margin-bottom:14px}
+#esets .item{margin-bottom:6px;padding:9px 10px}
+#esets .item .it1{gap:8px}
+#esets .btnrow{margin-top:8px}
+#esets .setsum{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);
+  font-variant-numeric:tabular-nums;text-align:right;padding:2px 2px 0}
 
 /* ---- 进展曲线 ---- */
 .chart{margin:4px 0 2px}
@@ -281,7 +289,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.6";
+const APP_VERSION = "2026-08-03.7";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -857,6 +865,7 @@ function exSheet(rec, date, pre) {
       <label>动作名称</label><input id="e_name" value="${esc(w.name)}" placeholder="深蹲 / 跑步"></div></div>
     <div class="subhead">每组的次数和重量</div>
     <div class="daylist" id="esets"></div>
+    <div class="subhead">时长与备注 · 选填</div>
     <div class="frow">
       <div class="fcell"><label>时长 MIN</label><input id="e_dur" type="number" inputmode="decimal" value="${w.dur || ""}" placeholder="–"></div>
       <div class="fcell text" style="flex:2"><label>备注</label><input id="e_note" value="${esc(w.note || "")}" placeholder="RPE 8 / 力竭"></div>
@@ -908,6 +917,16 @@ function grabSets() {
     const v = parseFloat(el.value); exSets[+el.dataset.sw].wt = isFinite(v) && v > 0 ? v : 0;
   });
 }
+/* 边填边显示汇总，省得自己数；顺手把输入框的值收回 exSets */
+function setSummary() {
+  const el = document.getElementById("e_sum");
+  if (!el) return;
+  grabSets();
+  const reps = exSets.reduce((a, x) => a + (x.reps || 0), 0), w = modeOf(exSets.map(x => x.wt));
+  el.textContent = exSets.length + " 组"
+    + (reps ? " · 共 " + reps + " 次" : "")
+    + (w ? " · 稳定 " + r1(w) + " kg" : "");
+}
 function mountSetList() {
   const el = document.getElementById("esets");
   if (!el) return;
@@ -920,9 +939,12 @@ function mountSetList() {
       <button class="drop" data-sx="${i}">×</button></div></div>`;
   });
   if (!exSets.length) h += `<div class="dayempty" style="text-align:center;padding:10px 0">还没有组 · 点下面加一组<br>纯有氧可以不加组，只填时长</div>`;
-  h += `<div class="btnrow" style="margin-top:2px"><button id="e_addset">+ 加一组${
+  else h += `<div class="setsum" id="e_sum"></div>`;
+  h += `<div class="btnrow"><button id="e_addset">+ 加一组${
     exSets.length ? "（沿用上一组）" : ""}</button></div>`;
   el.innerHTML = h;
+  el.querySelectorAll("[data-sr],[data-sw]").forEach(i => i.oninput = setSummary);
+  setSummary();
   el.querySelectorAll("[data-sx]").forEach(b => b.onclick = () => {
     grabSets(); exSets.splice(+b.dataset.sx, 1); mountSetList();
   });
