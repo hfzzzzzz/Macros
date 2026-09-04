@@ -98,6 +98,10 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .dayhead .dh1 em{font-style:normal;font-family:var(--mono);color:var(--ink-faint);margin-left:7px}
 .dayhead .dh1.istoday{color:var(--ink);font-weight:600}
 .dayhead .add{font-size:12px;color:var(--lift);padding:3px 9px;border-radius:7px;background:var(--surface-2)}
+.dtog{display:flex;align-items:center;gap:0;min-width:0;flex:0 1 auto;text-align:left}
+.dtog .cv{flex:none;width:15px;font-size:10px;color:var(--ink-faint);line-height:1}
+.mvsel{flex:none;max-width:88px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;
+  padding:4px 6px;outline:none;font-size:12px;color:var(--ink-mute)}
 .exrow{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(46,52,68,.45)}
 .exrow:last-child{border-bottom:none}
 .exrow .ex1,.prow .ex1{flex:1;min-width:0}
@@ -289,7 +293,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-08-03.8";
+const APP_VERSION = "2026-09-04";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -316,19 +320,29 @@ const PARTS = [
   { name: "腿部", items: ["杠铃深蹲", "保加利亚蹲", "倒蹬", "坐姿腿屈伸", "腿弯举", "髋外展", "髋内收", "臀桥"] },
   { name: "有氧+核心", items: ["跑步机爬坡", "卷腹机", "绳索转体", "绳索下伐木"] }
 ];
-const PART_OF = {};   // 动作名 → 部位名，反查用
-for (const p of PARTS) for (const n of p.items) if (!(n in PART_OF)) PART_OF[n] = p.name;
+/* PARTS 只是出厂清单，真正在用的是 S.parts（用户可以在「动作管理」里改）。
+   PART_OF 是「动作名 → 部位名」的反查表，改完目录必须调 rebuildPartOf()。 */
+let PART_OF = {};
+function rebuildPartOf() {
+  PART_OF = {};
+  for (const p of (S.parts || [])) for (const n of p.items) if (!(n in PART_OF)) PART_OF[n] = p.name;
+}
 function partDay(p) {
   return { name: p.name, items: p.items.map(n => ({ name: n, sets: 3, reps: 10, wt: 0 })) };
 }
 /* 内置分化 · days 长度固定 7，对应周一..周日，items 为空即休息日 */
 const REST = { name: "", items: [] };
-const PRESETS = [
-  { name: "六分化 · 每个部位一天", days: PARTS.map(partDay).concat([REST]) },
-  { name: "五分化 · 练五休二", days: PARTS.slice(0, 5).map(partDay).concat([REST, REST]) }
-];
+/* 预设按当前目录现算，这样改过动作目录后新建的分化也跟着变 */
+function presets() {
+  const ps = S.parts || [];
+  return [
+    { name: "六分化 · 每个部位一天", days: ps.slice(0, 6).map(partDay).concat(Array(Math.max(1, 7 - Math.min(6, ps.length))).fill(REST)).slice(0, 7) },
+    { name: "五分化 · 练五休二", days: ps.slice(0, 5).map(partDay).concat([REST, REST, REST]).slice(0, 7) }
+  ];
+}
 
 let S = load();
+rebuildPartOf();
 let view = "today";
 let cursor = todayKey();
 let wkCursor = weekStart(todayKey());
@@ -343,9 +357,10 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 8, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 9, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
+    parts: PARTS.map(p => ({ name: p.name, items: p.items.slice() })), partsTs: 0,
     sync: { token: "", gistId: "", last: 0 }
   };
 }
@@ -402,6 +417,18 @@ function migrate(o) {
       Array.isArray(w.ss) ? w : Object.assign({}, w, { ss: setsOf(w) }));
     s.v = 8;
   }
+  if (!o.v || o.v < 9) {
+    // 动作目录从常量搬进数据里，出厂内容原样照抄，用户之后可以自己改
+    s.parts = Array.isArray(o.parts) && o.parts.length ? o.parts : b.parts;
+    s.partsTs = o.partsTs || 0;
+    s.v = 9;
+  }
+  // 目录规整：部位名去空、动作名去重去空；整个空了就退回出厂清单
+  s.parts = (s.parts || []).map(p => ({
+    name: String((p && p.name) || "").trim(),
+    items: ((p && p.items) || []).map(n => String(n).trim()).filter((n, i, a) => n && a.indexOf(n) === i)
+  })).filter(p => p.name);
+  if (!s.parts.length) s.parts = b.parts;
   // 维度：只留认识的字段和正数，空记录整条丢掉
   const ms = {};
   for (const d in (s.meas || {})) {
@@ -668,6 +695,13 @@ function renderComposer() {
 }
 
 /* ---------------- 训练 ---------------- */
+/* 每天可折叠。只记用户手动翻过的那几天（内存里，不进 S）：
+   没翻过就用默认 —— 今天、以及有计划或有记录的日子展开，空日子收起。 */
+let dayFold = {};
+function dayOpen(d, tk, st, ex) {
+  if (d in dayFold) return dayFold[d];
+  return d === tk || !!st || ex.length > 0;
+}
 function renderTrain() {
   const days = []; for (let i = 0; i < 7; i++) days.push(shiftDay(wkCursor, i));
   const tk = todayKey(), p = curPlan();
@@ -700,12 +734,18 @@ function renderTrain() {
 
   days.forEach((d, i) => {
     const st = planStat(d), ex = exOn(d), taken = {};
+    const open = dayOpen(d, tk, st, ex);
     h += `<div class="dayblock"><div class="dayhead">
-      <div class="dh1${d === tk ? " istoday" : ""}">${DOW[i]}<em>${d.slice(5)}</em></div>
-      ${st ? `<span class="daytag">${esc(st.day.name || "训练")} ${st.done}/${st.total}</span>` : ""}
+      <button class="dtog" data-dtog="${d}">
+        <span class="cv">${open ? "▾" : "▸"}</span>
+        <span class="dh1${d === tk ? " istoday" : ""}">${DOW[i]}<em>${d.slice(5)}</em></span>
+        ${st ? `<span class="daytag">${esc(st.day.name || "训练")} ${st.done}/${st.total}</span>`
+          : ex.length ? `<span class="daytag">${ex.length} 个动作</span>` : ""}
+      </button>
       <span style="margin-left:auto;display:flex;gap:6px;flex:none">
         ${ex.length ? `<button class="add" data-xd="${d}">输出</button>` : ""}
         <button class="add" data-add="${d}">+ 动作</button></span></div>`;
+    if (!open) { h += `</div>`; return; }
     if (st) st.day.items.forEach((it, j) => {
       const rec = doneRec(d, it.name);
       if (rec) taken[rec.id] = 1;
@@ -731,6 +771,11 @@ function renderTrain() {
   scroll.querySelector("#prevw").onclick = () => { wkCursor = shiftDay(wkCursor, -7); render(); };
   scroll.querySelector("#nextw").onclick = () => { wkCursor = shiftDay(wkCursor, 7); render(); };
   scroll.querySelector("#planbar").onclick = planSheet;
+  scroll.querySelectorAll("[data-dtog]").forEach(b => b.onclick = () => {
+    const d = b.dataset.dtog;
+    dayFold[d] = !dayOpen(d, todayKey(), planStat(d), exOn(d));
+    render();
+  });
   const pick = ds => { const [di, ii] = ds.split("|").map(Number); const d = days[di], pd = planDay(d); return pd ? { d, it: pd.items[ii] } : null; };
   scroll.querySelectorAll("[data-tick]").forEach(b => b.onclick = () => {
     const x = pick(b.dataset.tick); if (x) togglePlanItem(x.d, x.it);
@@ -834,8 +879,8 @@ let pickPart = "";
 function mountPartPicker(id, onPick, onAll) {
   const el = document.getElementById(id);
   if (!el) return;
-  const p = PARTS.find(x => x.name === pickPart);
-  let h = `<div class="chips" style="margin-bottom:${p ? 6 : 10}px">${PARTS.map(x =>
+  const parts = S.parts || [], p = parts.find(x => x.name === pickPart);
+  let h = `<div class="chips" style="margin-bottom:${p ? 6 : 10}px">${parts.map(x =>
     `<button class="chip${x.name === pickPart ? " on" : ""}" data-part="${esc(x.name)}">${esc(x.name)}</button>`).join("")}</div>`;
   if (p) {
     h += `<div class="chips" style="margin-bottom:8px">${p.items.map(n => {
@@ -843,6 +888,7 @@ function mountPartPicker(id, onPick, onAll) {
       return `<button class="chip" data-pex="${esc(n)}">${esc(n)}${wt ? ` <em style="font-style:normal;color:var(--lift)">${r1(wt)}kg</em>` : ""}</button>`;
     }).join("")}</div>`;
     if (onAll) h += `<div class="btnrow" style="margin:0 0 10px"><button data-pall="1">整组加入 · ${p.items.length} 个动作</button></div>`;
+    h += `<div class="hint" style="margin:0 0 8px">动作不在这里？到「设置 → 动作管理」加进对应部位</div>`;
   }
   el.innerHTML = h;
   el.querySelectorAll("[data-part]").forEach(b => b.onclick = () => {
@@ -953,6 +999,92 @@ function mountSetList() {
   };
 }
 
+/* ---------------- 动作管理 ----------------
+   S.parts 是可编辑的动作目录。加动作、排分化、CSV 的部位列全看它。
+   改完必须 rebuildPartOf() + 盖 partsTs，否则反查表和同步会对不上。 */
+let mgPart = "";   // 动作管理里当前展开的部位
+function savePartsEdit() {
+  S.partsTs = Date.now();
+  rebuildPartOf();
+  save(); queueSync();
+}
+/* 历史记录和分化里用过、但不在目录里的动作名 */
+function looseNames() {
+  const seen = {}, out = [];
+  for (const w of S.workouts) if (!seen[w.name] && !(w.name in PART_OF)) { seen[w.name] = 1; out.push(w.name); }
+  for (const p of S.plans) for (const d of p.days) for (const it of d.items)
+    if (!seen[it.name] && !(it.name in PART_OF)) { seen[it.name] = 1; out.push(it.name); }
+  return out.sort();
+}
+function partsSheet() {
+  const parts = S.parts;
+  if (!parts.some(p => p.name === mgPart)) mgPart = parts[0].name;
+  const cur = parts.find(p => p.name === mgPart);
+  const loose = looseNames();
+  let h = `<h3>动作管理</h3>
+    <div class="sh-sub">把动作分到部位里 · 加动作时就按部位挑</div>
+    <div class="chips" style="margin-bottom:10px">${parts.map(p =>
+      `<button class="chip${p.name === mgPart ? " on" : ""}" data-mgp="${esc(p.name)}">${esc(p.name)} ${p.items.length}</button>`).join("")}</div>
+    <div class="subhead">${esc(mgPart)} · ${cur.items.length} 个动作</div>
+    <div class="daylist">`;
+  cur.items.forEach((n, i) => {
+    h += `<div class="item"><div class="it1" style="margin-bottom:0">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n)}</span>
+      <select class="mvsel" data-mgmv="${i}">${parts.map(p =>
+        `<option value="${esc(p.name)}"${p.name === mgPart ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
+      <button class="drop" data-mgdel="${i}">×</button></div></div>`;
+  });
+  if (!cur.items.length) h += `<div class="dayempty" style="text-align:center;padding:12px 0">这个部位还没有动作</div>`;
+  h += `</div>
+    <div class="frow" style="margin-top:10px"><div class="fcell text" style="flex:1">
+      <label>加一个动作到「${esc(mgPart)}」</label>
+      <input id="mg_new" placeholder="动作名称"></div>
+      <div class="fcell" style="flex:0 0 62px;display:flex;align-items:flex-end">
+        <button id="mg_add" style="width:100%;padding:6px 0;border-radius:8px;background:var(--surface-2);color:var(--ink)">加入</button></div>
+    </div>`;
+  if (loose.length) h += `<div class="subhead">练过但不在目录里 · 点一下加进「${esc(mgPart)}」</div>
+    <div class="chips" style="margin-bottom:10px">${loose.map(n =>
+      `<button class="chip" data-mgloose="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
+  h += `<div class="sheetact">
+      <button class="ghost" id="mg_reset">恢复出厂</button>
+      <button class="go" id="mg_done">完成</button></div>`;
+  openSheet(h);
+  const g = id => document.getElementById(id);
+  document.querySelectorAll("[data-mgp]").forEach(b => b.onclick = () => { mgPart = b.dataset.mgp; partsSheet(); });
+  document.querySelectorAll("[data-mgdel]").forEach(b => b.onclick = () => {
+    cur.items.splice(+b.dataset.mgdel, 1); savePartsEdit(); partsSheet();
+  });
+  document.querySelectorAll("[data-mgmv]").forEach(sel => sel.onchange = () => {
+    const to = S.parts.find(p => p.name === sel.value);
+    const n = cur.items[+sel.dataset.mgmv];
+    if (!to || to.name === mgPart) return;
+    cur.items.splice(+sel.dataset.mgmv, 1);
+    if (!to.items.includes(n)) to.items.push(n);
+    savePartsEdit(); partsSheet();
+    toast(n + " → " + to.name);
+  });
+  const addOne = n => {
+    n = String(n || "").trim();
+    if (!n) return;
+    if (PART_OF[n]) { toast(n + " 已经在「" + PART_OF[n] + "」里了"); return; }
+    cur.items.push(n); savePartsEdit(); partsSheet();
+  };
+  g("mg_add").onclick = () => addOne(g("mg_new").value);
+  g("mg_new").onkeydown = e => { if (e.key === "Enter") addOne(g("mg_new").value); };
+  document.querySelectorAll("[data-mgloose]").forEach(b => b.onclick = () => addOne(b.dataset.mgloose));
+  g("mg_reset").onclick = () => {
+    if (g("mg_reset").dataset.arm !== "1") {
+      g("mg_reset").dataset.arm = "1"; g("mg_reset").textContent = "再点一次确认";
+      setTimeout(() => { const x = g("mg_reset"); if (x && x.dataset.arm === "1") { x.dataset.arm = ""; x.textContent = "恢复出厂"; } }, 4000);
+      return;
+    }
+    S.parts = PARTS.map(p => ({ name: p.name, items: p.items.slice() }));
+    savePartsEdit(); partsSheet();
+    toast("动作目录已恢复出厂");
+  };
+  g("mg_done").onclick = () => { closeSheet(); render(); };
+}
+
 /* ---------------- 分化管理 ----------------
    三层 sheet：列表 → 编辑分化 → 编辑某天
    编辑期间都改 draft（S.plans 里那条的深拷贝），只有「保存」才写回 */
@@ -971,7 +1103,7 @@ function planSheet() {
       <div class="it2"><span>${cnt} 个动作</span><span>${on || "未排"}</span></div></div>`;
   }
   h += `<div class="card"><h4>从模板新建</h4>
-    <div class="btnrow">${PRESETS.map((x, i) => `<button data-preset="${i}">${esc(x.name)}</button>`).join("")}</div></div>
+    <div class="btnrow">${presets().map((x, i) => `<button data-preset="${i}">${esc(x.name)}</button>`).join("")}</div></div>
     <div class="sheetact">
       <button class="ghost" id="pl_new">空白新建</button>
       <button class="go" id="pl_done">完成</button></div>`;
@@ -982,7 +1114,7 @@ function planSheet() {
   });
   document.querySelectorAll("[data-pedit]").forEach(b => b.onclick = () =>
     openPlan(S.plans.find(p => p.id === b.dataset.pedit)));
-  document.querySelectorAll("[data-preset]").forEach(b => b.onclick = () => newPlan(PRESETS[+b.dataset.preset]));
+  document.querySelectorAll("[data-preset]").forEach(b => b.onclick = () => newPlan(presets()[+b.dataset.preset]));
   document.getElementById("pl_new").onclick = () => newPlan(null);
   document.getElementById("pl_done").onclick = () => { closeSheet(); render(); };
 }
@@ -1083,8 +1215,8 @@ function planDaySheet(i) {
 
 /* ---------------- 趋势 ---------------- */
 function renderTrend() {
-  const days = []; for (let i = 13; i >= 0; i--) days.push(shiftDay(todayKey(), -i));
-  let h = `<div class="datebar"><div class="d">近 14 天</div></div>
+  const days = []; for (let i = 6; i >= 0; i--) days.push(shiftDay(todayKey(), -i));
+  let h = `<div class="datebar"><div class="d">近 7 天</div></div>
     <div class="legend">
       <span><s style="background:var(--carb)"></s>碳水</span>
       <span><s style="background:var(--prot)"></s>蛋白</span>
@@ -1108,7 +1240,7 @@ function renderTrend() {
   h += `</div>`;
   if (n || td) h += `<div class="card"><h4>汇总</h4><div class="readout">
       ${n ? `有记录 <b>${n}</b> 天 · 达成率 碳水 <b>${r0(sc / n * 100)}%</b> 蛋白 <b>${r0(sp / n * 100)}%</b> 脂肪 <b>${r0(sf / n * 100)}%</b><br>` : ""}
-      训练 <b>${td}</b> 天 / 14</div></div>`;
+      训练 <b>${td}</b> 天 / 7</div></div>`;
   h += bodyCards();
   h += progressCard();
   scroll.innerHTML = h;
@@ -1364,6 +1496,12 @@ function renderSettings() {
     </div>
   </div>
 
+  <div class="card"><h4>训练</h4>
+    <div class="readout">动作目录 <b>${S.parts.reduce((a, p) => a + p.items.length, 0)}</b> 个动作 · <b>${S.parts.length}</b> 个部位
+      · 分化 <b>${S.plans.length}</b> 个</div>
+    <div class="btnrow"><button id="b_parts">动作管理</button><button id="b_plans">训练分化</button></div>
+  </div>
+
   <div class="card"><h4>营养查询</h4>
     <div class="readout" style="font-family:var(--sans);font-size:12.5px;line-height:1.6;color:var(--ink-mute)">
       库里没有的食物，在 Claude App 里查一次再把 JSON 粘回来，走你的订阅，不产生额外费用。
@@ -1413,6 +1551,8 @@ function renderSettings() {
   };
   q("#b_lib").onclick = showLib;
   q("#b_ro").onclick = routineSheet;
+  q("#b_parts").onclick = partsSheet;
+  q("#b_plans").onclick = planSheet;
   q("#b_csv").onclick = exportCSV;
   q("#b_wcsv").onclick = exportWorkoutCSV;
   q("#b_json").onclick = exportJSON;
@@ -1477,6 +1617,10 @@ function merge(local, remote) {
     out.kf = remote.kf; out.settingsTs = remote.settingsTs;
     out.activePlan = remote.activePlan || "";
   }
+  // 动作目录整体 LWW，用自己的时间戳 —— 改目录不该顺带覆盖体重和系数
+  if ((remote.partsTs || 0) > (local.partsTs || 0) && Array.isArray(remote.parts) && remote.parts.length) {
+    out.parts = remote.parts; out.partsTs = remote.partsTs;
+  }
   // 选中的分化被合并掉了就取消选中
   if (out.activePlan && !out.plans.some(p => p.id === out.activePlan)) out.activePlan = "";
   // 清理 120 天前的墓碑，控制体积
@@ -1489,10 +1633,11 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 8, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 9, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
-    plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas
+    plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas,
+    parts: S.parts, partsTs: S.partsTs || 0
   };
 }
 function dot(cls) {
@@ -1544,7 +1689,7 @@ async function syncNow(silent) {
     }
     const merged = merge(S, remote);
     merged.sync = S.sync;
-    S = merged;
+    S = merged; rebuildPartOf();
     const files = {}; files[GIST_FILE] = { content: JSON.stringify(syncPayload()) };
     await gh("/gists/" + S.sync.gistId, { method: "PATCH", body: JSON.stringify({ files }) });
     S.sync.last = Date.now(); save(); dot("ok"); render();
@@ -2119,7 +2264,7 @@ function importJSON() {
         if (!j || !Array.isArray(j.entries)) throw new Error("bad");
         const inc = migrate(j);
         const keepSync = S.sync;
-        S = merge(S, inc); S.sync = keepSync;
+        S = merge(S, inc); S.sync = keepSync; rebuildPartOf();
         save(); render(); queueSync();
         toast("已合并 · 饮食 " + S.entries.length + " · 训练 " + S.workouts.length);
       } catch (e) { toast("文件格式不对，导入取消"); }

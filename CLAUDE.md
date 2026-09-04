@@ -13,7 +13,7 @@
 ## 仓库结构
 
 ```
-index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 2050 行）
+index.html   ← 整个应用（HTML + CSS + JS 全部内联，约 2200 行）
 README.md    ← 只有一行标题
 CLAUDE.md    ← 本文件
 ```
@@ -53,7 +53,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的八轮：
+历史上跑过的九轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
 - `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
@@ -62,7 +62,8 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `2026-08-03.5`：39 项，专攻每日锻炼输出 —— 文本清单的编号/组次/有氧/备注/空日期各种形态、当天 CSV 能被自家 parseCSV 读回来（含逗号引号的动作名）、两处入口的出现条件、`navigator.share` 有无时的降级；外加一轮冒烟。
 - `2026-08-03.6`：51 项，专攻组级记录 —— 汇总值算法（mode/摊平/紧凑写法）、v7→v8 迁移后数字一个不变、每组增删不错位不清表单、打勾按计划铺组、显示/输出/CSV/曲线全走每组明细、merge 不丢 ss；外加一轮冒烟。
 - `2026-08-03.7`：55 项，在上一轮基础上加了版面断言 —— 每组汇总行随输入更新、「加一组」与下方字段的间距、整张 sheet 全元素两两不重叠。
-- `2026-08-03.8`（当前）：61 项，加动作 sheet 去掉「最近用过」那行 —— 没选部位时一个动作都不列、选/换部位只列对应部位、目录外动作仍可手填存下、分化编辑器那行保留。
+- `2026-08-03.8`：61 项，加动作 sheet 去掉「最近用过」那行 —— 没选部位时一个动作都不列、选/换部位只列对应部位、目录外动作仍可手填存下、分化编辑器那行保留。
+- `2026-09-04`（当前）：52 项，三件事 —— 训练页每天可折叠（默认规则、手动翻页、收起后表头摘要与按钮仍在、状态不进 S）、动作管理（增/删/改部位、未归类动作归位、恢复出厂、partsTs 单独 LWW 不串设置）、趋势热量改近 7 天；外加一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -81,18 +82,19 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 | 段落 | 职责 |
 |---|---|
-| 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、`PARTS` 动作目录、内置分化预设 |
+| 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、`PARTS` 出厂动作目录 |
 | `state` | `blank()` / `migrate()` / `load()` / `save()` |
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
 | `computed` | `lastWeight()` / `targets()` / `eatenOn()` / `exOn()` / `workWt()` |
 | `render` | `render()` 总调度 + 四个 tab 的渲染函数 |
 | `训练计划` | `curPlan/planDay/planStat/doneRec/workWt/togglePlanItem` |
 | `部位选择器` | `mountPartPicker()` —— 两级 chip，加动作和排分化共用 |
+| `动作管理` | `partsSheet()` / `rebuildPartOf()` / `looseNames()` —— 编辑 S.parts |
 | `组级记录` | `setsOf/modeOf/reSum/totalReps/setsText/setsCSV` |
 | `训练` | 周视图、当日计划打勾、动作编辑 sheet、`mountSetList()` 每组编辑 |
 | `每日锻炼输出` | `dayText()` / `dayCSV()` / `exportDaySheet()` |
 | `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
-| `趋势` | 近 14 天条形图 |
+| `趋势` | 近 7 天条形图 |
 | `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
 | `动作进展` | `exSessions/metricOf/curveSVG/progressCard` |
 | `设置` | 饮食目标（目标体重+系数）、身体记录入口、同步配置、数据导入导出 |
@@ -119,15 +121,18 @@ let pending // review sheet 里待确认的条目数组
 let draft   // 正在编辑的分化 / 常规搭配副本，保存前不碰 S.plans / S.routines
 let trendEx // 进展曲线当前选中的动作名
 let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
+let dayFold // 训练页每天的折叠状态，只记手动翻过的，不进 S
+let mgPart  // 动作管理里当前展开的部位
+let pickPart// 部位选择器当前展开的部位
 ```
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 8`）
+### 数据模型（`S`，schema `v: 9`）
 
 ```js
 {
-  v: 8,
+  v: 9,
   weight: 70,                    // 目标体重：只用来算营养目标，跟 weights 无关
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
@@ -152,6 +157,9 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
   routines: [{ id, name, meal, ts,
     items: [{ name, q }] }],     // 常规搭配；q 的单位取 lib 里那条的 u，不单独存
+
+  parts: [{ name: "胸", items: ["平板卧推", …] }],  // 动作目录，用户可编辑
+  partsTs: 0,                    // 目录整体的 LWW 时间戳，跟 settingsTs 分开
 
   sync: { token, gistId, last }  // ← 仅本机，不进 syncPayload()
 }
@@ -203,6 +211,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 | `entries` / `workouts` / `plans` / `routines` | 按 `id` 合并，同 id 取 `ts` 大的；再用 `tomb` 过滤掉「删除时间晚于记录时间」的 |
 | `weights` / `meas` / `lib` | 按 key（日期 / 食物名）逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
 | `tomb` / `libTomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
+| `parts`（动作目录） | 整体按 `partsTs` LWW，**跟设置分开**，改目录不会覆盖体重系数 |
 | 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
 
 触发点：`queueSync()`（4 秒防抖）、页面重新可见、`online` 事件、设置页手动按钮。`#syncdot` 是右上角状态灯（灰=闲 / 橙=同步中 / 绿=成功 / 红=失败）。
@@ -251,6 +260,17 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 - 从食物库点着加时，默认分量就是一份（固体 100 g / 液体 250 ml），改一下就行。
 - 入口有两个：今日页 composer 顶上的 ⚡ chip 行（只在有搭配时才渲染，没有就不占地方），和「设置 → 常规摄入」。
 - 编辑走 `draft`，跟分化编辑器同一套；`routineEditSheet` 的 `grab()` 同样**不过滤空行**，否则删除按钮下标错位。
+
+### 动作目录可编辑（`S.parts`）
+
+`PARTS` 常量只是**出厂清单**，真正在用的是 `S.parts`（schema `v: 9` 起搬进数据里，用户在「设置 → 动作管理」里改）。
+
+- **改完目录必须 `rebuildPartOf()` 重建反查表，并盖 `S.partsTs`**，两件事都在 `savePartsEdit()` 里，走这个入口就不会漏。
+- `S` 被整个替换的地方（`syncNow` 合并后、`importJSON` 导入后、boot）也都要 `rebuildPartOf()`，已经加了。
+- `partsTs` 是目录**自己的** LWW 时间戳，**没有并进 `settingsTs`** —— 否则在一台设备上加个动作会顺带把另一台的体重和系数覆盖掉。
+- `presets()` 是函数不是常量，按当前 `S.parts` 现算，所以改过目录后新建的分化会跟着变。
+- `migrate()` 会规整目录：部位名去空、动作名去重去空；整个空了就退回出厂清单，不会留下一个没有部位的状态。
+- `looseNames()` 列出「练过或排进分化、但不在目录里」的动作名，动作管理里点一下就能归类。
 
 ### 动作目录按部位模块化
 
@@ -362,7 +382,7 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-08-03.8"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-04"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
@@ -385,3 +405,35 @@ let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
 - **分化按 N 天循环**而不是绑星期（现在 `planDay()` 直接用 `dowIndex()`，改这里要同时改周视图的呈现）
 
 - **休息计时器**、**动作示范图** —— 都需要额外资源，跟「单文件零依赖」的约束冲突，想清楚再做
+
+---
+
+## 集群状态查询：读共享缓存，勿自行 SSH
+
+五集群（`fir` / `nibi` / `rorqual` / `narval` / `trillium`）的 FairShare 与作业状态，
+由 **`research` session 的 `/loop 5h`** 统一采集，结果缓存在：
+
+- WSL：`/mnt/d/FangzhengHuang/projects/_cluster_status/latest.md`
+- Windows：`d:\FangzhengHuang\projects\_cluster_status\latest.md`
+
+**本 session 需要集群状态时，直接 `cat` 这个文件即可** —— 不要自己 ssh、
+不要自己跑 `sshare` / `squeue`、不要自己建 ControlMaster。
+理由：每个 session 各自轮询会重复消耗 Fable credit 和 SSH 连接；集群侧数据
+5 小时刷新一次，对排队/FairShare 这种慢变量足够。
+
+```bash
+cat /mnt/d/FangzhengHuang/projects/_cluster_status/last_poll_utc.txt   # 新鲜度
+cat /mnt/d/FangzhengHuang/projects/_cluster_status/latest.md           # 快照
+```
+
+快照过期（>5h）且确实需要更新数据时，**登记请求**而不是自己轮询：
+
+```bash
+bash /mnt/d/FangzhengHuang/projects/_cluster_status/request_poll.sh "<项目>: <为什么需要>"
+```
+
+`research` 的 loop 会在下一 tick 补采并清空请求。
+
+MFA 纪律：master 过期时由**用户本人**在 WSL 执行 `ssh -fN <别名>` 确认 Duo；
+Claude 不代做 MFA。协议细节见 `_cluster_status/README.md`，
+集群运维经验见 `sa3c-fpn/docs/CLUSTER_OPS.md`。
