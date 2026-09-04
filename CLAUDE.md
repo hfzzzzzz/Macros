@@ -53,7 +53,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的九轮：
+历史上跑过的十轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
 - `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
@@ -63,7 +63,8 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `2026-08-03.6`：51 项，专攻组级记录 —— 汇总值算法（mode/摊平/紧凑写法）、v7→v8 迁移后数字一个不变、每组增删不错位不清表单、打勾按计划铺组、显示/输出/CSV/曲线全走每组明细、merge 不丢 ss；外加一轮冒烟。
 - `2026-08-03.7`：55 项，在上一轮基础上加了版面断言 —— 每组汇总行随输入更新、「加一组」与下方字段的间距、整张 sheet 全元素两两不重叠。
 - `2026-08-03.8`：61 项，加动作 sheet 去掉「最近用过」那行 —— 没选部位时一个动作都不列、选/换部位只列对应部位、目录外动作仍可手填存下、分化编辑器那行保留。
-- `2026-09-04`（当前）：52 项，三件事 —— 训练页每天可折叠（默认规则、手动翻页、收起后表头摘要与按钮仍在、状态不进 S）、动作管理（增/删/改部位、未归类动作归位、恢复出厂、partsTs 单独 LWW 不串设置）、趋势热量改近 7 天；外加一轮冒烟。
+- `2026-09-04`：52 项，三件事 —— 训练页每天可折叠（默认规则、手动翻页、收起后表头摘要与按钮仍在、状态不进 S）、动作管理（增/删/改部位、未归类动作归位、恢复出厂、partsTs 单独 LWW 不串设置）、趋势热量改近 7 天；外加一轮冒烟。
+- `2026-09-04.2`（当前）：42 项，常规搭配可以手动管理 —— 空食物库也能建、手填的食物就地存进库（固体/液体两种一份大小、上限校验）、标红条目点一下补营养值、库存筛选只重画 chip、保存与应用链路，外加版面不重叠和一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -101,7 +102,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
 | `Gist sync` | GitHub API 封装、创建 gist、`syncNow()`、`queueSync()` |
-| `常规摄入` | `routineItems/applyRoutine/routineSheet/routineEditSheet` |
+| `常规摄入` | `routineItems/applyRoutine/routineSheet/routineEditSheet/mountLibChips` |
 | `食物库` | `showLib()` / `dropLib()` / `exportLib()` / `parseCSV()` / `importLibText()` / `libImportSheet()` |
 | `sheet` | 底部弹层的开关 |
 | `饮食录入` | `submit()` / `quickParse()` / `SYS` 提示词 |
@@ -121,6 +122,7 @@ let pending // review sheet 里待确认的条目数组
 let draft   // 正在编辑的分化 / 常规搭配副本，保存前不碰 S.plans / S.routines
 let trendEx // 进展曲线当前选中的动作名
 let trendMeas// 维度曲线当前选中的项目 arm/chest/waist/hip
+let roNew   // 常规搭配里正在手填的那一样，重画不丢
 let dayFold // 训练页每天的折叠状态，只记手动翻过的，不进 S
 let mgPart  // 动作管理里当前展开的部位
 let pickPart// 部位选择器当前展开的部位
@@ -259,7 +261,17 @@ let pickPart// 部位选择器当前展开的部位
 - 库里没有的食物在编辑器里标红，应用时跳过并 toast 提示，不会静默丢。
 - 从食物库点着加时，默认分量就是一份（固体 100 g / 液体 250 ml），改一下就行。
 - 入口有两个：今日页 composer 顶上的 ⚡ chip 行（只在有搭配时才渲染，没有就不占地方），和「设置 → 常规摄入」。
-- 编辑走 `draft`，跟分化编辑器同一套；`routineEditSheet` 的 `grab()` 同样**不过滤空行**，否则删除按钮下标错位。
+- 编辑走 `draft`，跟分化编辑器同一套；`grabRoutine()` 同样**不过滤空行**，否则删除按钮下标错位。
+
+**手动加一样**（`2026-09-04.2` 加的）：以前只能从食物库点选，食物库空的时候整个建不了搭配。现在编辑器里有一行「手动加一样」：
+
+- 名字**已在库里** → 直接加进搭配，分量留空就用一份。
+- 名字**不在库里** → 展开一张卡，填每份（固体 100 g / 液体 250 ml）的碳水蛋白脂肪，**一次存进 `S.lib` 并加进搭配**。上限同样是 `baseOf(u) * 1.005`。
+- 搭配里标红的「不在库里」条目**可以点**，带着名字和分量进同一张卡，补完这条就正常了 —— 不用先跳去食物库再回来。
+- 手填的暂存在 `roNew`，每次开编辑器都 `roReset()`；`grabRoutine()` 顺带把它收回来，所以重画不丢输入。
+- 食物超过 8 条时出筛选框，`mountLibChips()` 只重画 chip 容器，输入框不会失焦。
+
+**为什么手填的食物必须进库**：搭配里只存名字和分量，营养值一律从 `S.lib` 现取（这样改了库单位搭配跟着变）。所以「不进库的搭配条目」在应用时会被跳过 —— 与其留个死条目，不如就地把它建进库。
 
 ### 动作目录可编辑（`S.parts`）
 
@@ -382,7 +394,7 @@ let pickPart// 部位选择器当前展开的部位
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-04"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-04.2"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
@@ -437,3 +449,8 @@ bash /mnt/d/FangzhengHuang/projects/_cluster_status/request_poll.sh "<项目>: <
 MFA 纪律：master 过期时由**用户本人**在 WSL 执行 `ssh -fN <别名>` 确认 Duo；
 Claude 不代做 MFA。协议细节见 `_cluster_status/README.md`，
 集群运维经验见 `sa3c-fpn/docs/CLUSTER_OPS.md`。
+
+**要决定往哪个集群投作业**：查 `sa3c-fpn/docs/CLUSTER_OPS.md` **§5.6 投递决策表**
+（基于 390+ 作业的 `sacct` 实测：服务率、pending 分位数、GPU/节点/墙钟分桶）。
+实时数字在 `sa3c-fpn/docs/CLUSTER_SCHEDULING_STATS.md`，每 5h 自动重算。
+⚠️ **不要用 FairShare 选集群**——实测它不预测排队时长（见 §5.1）。

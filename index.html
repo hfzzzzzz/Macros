@@ -293,7 +293,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-09-04";
+const APP_VERSION = "2026-09-04.2";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -1905,18 +1905,56 @@ function routineSheet() {
   document.querySelectorAll("[data-ruse]").forEach(b => b.onclick = () => applyRoutine(b.dataset.ruse));
   document.querySelectorAll("[data-redit]").forEach(b => b.onclick = () => {
     const r = S.routines.find(x => x.id === b.dataset.redit);
-    draft = JSON.parse(JSON.stringify(r)); routineEditSheet();
+    draft = JSON.parse(JSON.stringify(r)); roReset(); routineEditSheet();
   });
   document.getElementById("ro_new").onclick = () => {
     draft = { id: newId(), name: "早餐", meal: MEALS[0], items: [], ts: Date.now() };
-    routineEditSheet();
+    roReset(); routineEditSheet();
   };
   document.getElementById("ro_done").onclick = () => { closeSheet(); render(); };
+}
+/* 手动加一样食物时的暂存。搭配里的条目只存名字和分量，营养值一律从
+   S.lib 现取，所以手填的东西必须先进食物库 —— 这里把那一步做成就地完成。 */
+let roNew = { name: "", q: "", u: "g", c: "", p: "", f: "", need: false };
+function roReset() { roNew = { name: "", q: "", u: "g", c: "", p: "", f: "", need: false }; }
+/* 食物库 chip 单独挂载，过滤时只重画自己，输入框不会失焦 */
+function mountLibChips() {
+  const el = document.getElementById("ro_libchips");
+  if (!el) return;
+  const f = (document.getElementById("ro_filter") || {}).value || "";
+  const names = Object.keys(S.lib).sort().filter(n => !f.trim() || n.indexOf(f.trim()) >= 0);
+  el.innerHTML = names.length
+    ? `<div class="chips" style="margin-bottom:8px">${names.map(n =>
+        `<button class="chip" data-radd="${esc(n)}">${esc(n)}</button>`).join("")}</div>`
+    : `<div class="dayempty" style="padding:6px 0">没有匹配的食物</div>`;
+  el.querySelectorAll("[data-radd]").forEach(b => b.onclick = () => {
+    const n = b.dataset.radd;
+    grabRoutine();
+    if (!draft.items.some(x => x.name === n)) draft.items.push({ name: n, q: baseOf(unitOf(n)) });
+    routineEditSheet();
+  });
+}
+/* 把 sheet 上的输入收回 draft / roNew。不过滤空行，否则删除按钮下标会错位 */
+function grabRoutine() {
+  const g = id => document.getElementById(id);
+  if (!g("ro_name")) return;
+  draft.name = g("ro_name").value.trim() || "常规搭配";
+  draft.meal = g("ro_meal").value;
+  document.querySelectorAll("[data-rq]").forEach(el => {
+    const v = parseFloat(el.value);
+    draft.items[+el.dataset.rq].q = isFinite(v) && v > 0 ? v : 0;
+  });
+  if (g("rn_name")) {
+    roNew.name = g("rn_name").value.trim();
+    roNew.q = g("rn_q").value;
+    roNew.u = g("rn_u").value;
+  }
+  ["c", "p", "f"].forEach(k => { if (g("rn_" + k)) roNew[k] = g("rn_" + k).value; });
 }
 function routineEditSheet() {
   if (!draft) return routineSheet();
   const exists = S.routines.some(x => x.id === draft.id);
-  const names = Object.keys(S.lib).sort();
+  const libN = Object.keys(S.lib).length;
   let h = `<h3>${exists ? "编辑常规搭配" : "新建常规搭配"}</h3>
     <div class="sh-sub">分量的单位跟着食物库里那条走，固体 g / 液体 ml</div>
     <div class="frow">
@@ -1924,41 +1962,102 @@ function routineEditSheet() {
         <input id="ro_name" value="${esc(draft.name)}" placeholder="早餐"></div>
       <div class="fcell" style="flex:1"><label>记入</label>
         <select id="ro_meal">${MEALS.map(m => `<option value="${m}"${draft.meal === m ? " selected" : ""}>${m}</option>`).join("")}</select></div>
-    </div><div class="daylist">`;
+    </div>
+    <div class="subhead">搭配内容</div><div class="daylist">`;
   draft.items.forEach((it, i) => {
     const has = !!S.lib[it.name];
     h += `<div class="item"><div class="it1">
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap${has ? "" : ";color:var(--over)"}">${esc(it.name)}${has ? "" : " · 不在库里"}</span>
+      ${has
+        ? `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(it.name)}</span>`
+        : `<button data-rfix="${i}" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;color:var(--over)">${esc(it.name)} · 不在库里，点我补上</button>`}
       <span class="gwrap"><input class="gm" data-rq="${i}" type="number" inputmode="decimal" value="${it.q || ""}"><em>${unitOf(it.name)}</em></span>
       <button class="drop" data-rx="${i}">×</button></div></div>`;
   });
-  if (!draft.items.length) h += `<div class="dayempty" style="text-align:center;padding:12px 0">从下面的食物库里点着加</div>`;
+  if (!draft.items.length) h += `<div class="dayempty" style="text-align:center;padding:12px 0">还是空的 · 下面手填一样，或从食物库点着加</div>`;
   h += `</div>`;
-  if (names.length) h += `<div class="subhead">食物库</div><div class="chips" style="margin-bottom:8px">${
-    names.map(n => `<button class="chip" data-radd="${esc(n)}">${esc(n)}</button>`).join("")}</div>`;
-  else h += `<div class="dayempty">食物库是空的，先去「设置 → 管理食物库」加几条</div>`;
+
+  // 手动加一样
+  h += `<div class="subhead">手动加一样</div>
+    <div class="frow">
+      <div class="fcell text" style="flex:2"><label>食物名称</label>
+        <input id="rn_name" value="${esc(roNew.name)}" placeholder="燕麦片"></div>
+      <div class="fcell"><label>分量</label>
+        <input id="rn_q" type="number" inputmode="decimal" value="${esc(roNew.q)}" placeholder="–"></div>
+      <div class="fcell" style="flex:0 0 62px"><label>单位</label>
+        <select id="rn_u">${UNITS.map(x => `<option value="${x}"${roNew.u === x ? " selected" : ""}>${x}</option>`).join("")}</select></div>
+    </div>`;
+  if (roNew.need) {
+    const base = baseOf(roNew.u);
+    h += `<div class="card" style="margin-bottom:9px">
+      <h4>「${esc(roNew.name)}」还不在食物库里</h4>
+      <div class="readout" style="font-family:var(--sans);font-size:12.5px;color:var(--ink-mute);margin-bottom:8px">
+        搭配只存名字和分量，营养值从食物库现取。填一下每 <b>${base} ${roNew.u}</b> 的克数，存进库就能用了。
+      </div>
+      <div class="frow" style="margin-bottom:0">
+        <div class="fcell"><label style="color:var(--carb)">碳水 G</label><input id="rn_c" type="number" inputmode="decimal" value="${esc(roNew.c)}" placeholder="0"></div>
+        <div class="fcell"><label style="color:var(--prot)">蛋白 G</label><input id="rn_p" type="number" inputmode="decimal" value="${esc(roNew.p)}" placeholder="0"></div>
+        <div class="fcell"><label style="color:var(--fat)">脂肪 G</label><input id="rn_f" type="number" inputmode="decimal" value="${esc(roNew.f)}" placeholder="0"></div>
+      </div>
+      <div class="btnrow"><button id="rn_cancel">取消</button><button class="pri" id="rn_save">存进食物库并加入</button></div>
+    </div>`;
+  } else {
+    h += `<div class="btnrow" style="margin-top:0"><button id="rn_add">加入搭配</button></div>`;
+  }
+
+  h += `<div class="subhead">食物库 · ${libN} 条</div>`;
+  if (libN > 8) h += `<div class="frow"><div class="fcell text" style="flex:1">
+    <label>筛选</label><input id="ro_filter" placeholder="打几个字缩小范围"></div></div>`;
+  h += `<div id="ro_libchips"></div>`;
+  if (!libN) h += `<div class="dayempty" style="padding:6px 0">食物库是空的 —— 用上面的「手动加一样」直接建就行</div>`;
   h += `<div class="sheetact">
       ${exists ? `<button class="danger" id="ro_del">删除</button>` : ""}
       <button class="ghost" id="ro_back">返回</button>
       <button class="go" id="ro_save">保存</button></div>`;
   openSheet(h);
   const g = id => document.getElementById(id);
-  // 不在这里过滤空行，否则删除按钮的下标会跟渲染时错位
-  const grab = () => {
-    draft.name = g("ro_name").value.trim() || "常规搭配";
-    draft.meal = g("ro_meal").value;
-    document.querySelectorAll("[data-rq]").forEach(el => {
-      const v = parseFloat(el.value);
-      draft.items[+el.dataset.rq].q = isFinite(v) && v > 0 ? v : 0;
-    });
-  };
-  document.querySelectorAll("[data-radd]").forEach(b => b.onclick = () => {
+  const grab = grabRoutine;
+  mountLibChips();
+  if (g("ro_filter")) g("ro_filter").oninput = mountLibChips;
+  document.querySelectorAll("[data-rx]").forEach(b => b.onclick = () => { grab(); draft.items.splice(+b.dataset.rx, 1); routineEditSheet(); });
+  // 库里没有的条目：点一下就地补营养值，补完这条就正常了
+  document.querySelectorAll("[data-rfix]").forEach(b => b.onclick = () => {
     grab();
-    const n = b.dataset.radd;
-    if (!draft.items.some(x => x.name === n)) draft.items.push({ name: n, q: baseOf(unitOf(n)) });
+    const it = draft.items[+b.dataset.rfix];
+    roNew = { name: it.name, q: it.q || "", u: "g", c: "", p: "", f: "", need: true };
     routineEditSheet();
   });
-  document.querySelectorAll("[data-rx]").forEach(b => b.onclick = () => { grab(); draft.items.splice(+b.dataset.rx, 1); routineEditSheet(); });
+  const addBtn = g("rn_add");
+  if (addBtn) addBtn.onclick = () => {
+    grab();
+    if (!roNew.name) { toast("先填食物名称"); return; }
+    if (S.lib[roNew.name]) {
+      const q = parseFloat(roNew.q);
+      const use = isFinite(q) && q > 0 ? q : baseOf(unitOf(roNew.name));
+      const hit = draft.items.find(x => x.name === roNew.name);
+      if (hit) hit.q = use; else draft.items.push({ name: roNew.name, q: use });
+      roReset();
+    } else roNew.need = true;
+    routineEditSheet();
+  };
+  if (g("rn_save")) g("rn_save").onclick = () => {
+    grab();
+    const num = k => { const v = parseFloat(roNew[k]); return isFinite(v) && v > 0 ? v : 0; };
+    const c = num("c"), p = num("p"), f = num("f");
+    if (!c && !p && !f) { toast("三个克数至少填一个"); return; }
+    const base = baseOf(roNew.u);
+    if (c + p + f > base * 1.005) { toast("一份里装不下这么多，检查一下数值"); return; }
+    S.lib[roNew.name] = { c, p, f, u: roNew.u, ts: Date.now() };
+    delete S.libTomb[roNew.name];
+    const q = parseFloat(roNew.q);
+    const use = isFinite(q) && q > 0 ? q : base;
+    const hit = draft.items.find(x => x.name === roNew.name);
+    if (hit) hit.q = use; else draft.items.push({ name: roNew.name, q: use });
+    save(); queueSync();
+    toast("「" + roNew.name + "」已存进食物库");
+    roReset();
+    routineEditSheet();
+  };
+  if (g("rn_cancel")) g("rn_cancel").onclick = () => { grab(); roNew.need = false; routineEditSheet(); };
   if (exists) g("ro_del").onclick = () => {
     removeRec("routines", draft.id); draft = null; routineSheet(); render();
   };
