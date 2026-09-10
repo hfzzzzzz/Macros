@@ -53,7 +53,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 
 **装置本身不入库**，写在临时目录里，会被系统清理掉 —— 已经丢过一次。所以它只是一次性工具，别指望它一直在；每次动大功能时照上面重建一份针对性的即可。
 
-历史上跑过的十轮：
+历史上跑过的十一轮：
 
 - `2026-08-03`（已丢失）：114 项，覆盖计划打勾、墓碑、merge、migrate、三层 sheet 导航、曲线渲染、录入三条路径、食物库清空/导入/不复活、手动录入入库、g/ml 单位换算、常规摄入。
 - `2026-08-03.2`：42 项，专攻体重/维度 —— v5→v6 迁移逐字段核对、录入与删除、序列与曲线、三张图各自的点击派发、`meas` 的 LWW 合并；外加一轮冒烟（四个 tab 渲染 + 五个 sheet 能开 + g/ml 换算 + 食物库导入）确认别处没被改坏。
@@ -64,7 +64,8 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `2026-08-03.7`：55 项，在上一轮基础上加了版面断言 —— 每组汇总行随输入更新、「加一组」与下方字段的间距、整张 sheet 全元素两两不重叠。
 - `2026-08-03.8`：61 项，加动作 sheet 去掉「最近用过」那行 —— 没选部位时一个动作都不列、选/换部位只列对应部位、目录外动作仍可手填存下、分化编辑器那行保留。
 - `2026-09-04`：52 项，三件事 —— 训练页每天可折叠（默认规则、手动翻页、收起后表头摘要与按钮仍在、状态不进 S）、动作管理（增/删/改部位、未归类动作归位、恢复出厂、partsTs 单独 LWW 不串设置）、趋势热量改近 7 天；外加一轮冒烟。
-- `2026-09-04.2`（当前）：42 项，常规搭配可以手动管理 —— 空食物库也能建、手填的食物就地存进库（固体/液体两种一份大小、上限校验）、标红条目点一下补营养值、库存筛选只重画 chip、保存与应用链路，外加版面不重叠和一轮冒烟。
+- `2026-09-04.2`：42 项，常规搭配可以手动管理 —— 空食物库也能建、手填的食物就地存进库（固体/液体两种一份大小、上限校验）、标红条目点一下补营养值、库存筛选只重画 chip、保存与应用链路，外加版面不重叠和一轮冒烟。
+- `2026-09-10`（当前）：52 项，三件事 —— 默认只展开当天（含翻周时一天都不开）、时段（v9→v10 补 sess=1 且别的不动、单段时界面完全不显示这层、分组/分段输出/分段 CSV/选择器/改段号搬家）、一键粘贴；外加一轮冒烟。
 
 ## 设计约束（改代码前先读）
 
@@ -93,7 +94,8 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `动作管理` | `partsSheet()` / `rebuildPartOf()` / `looseNames()` —— 编辑 S.parts |
 | `组级记录` | `setsOf/modeOf/reSum/totalReps/setsText/setsCSV` |
 | `训练` | 周视图、当日计划打勾、动作编辑 sheet、`mountSetList()` 每组编辑 |
-| `每日锻炼输出` | `dayText()` / `dayCSV()` / `exportDaySheet()` |
+| `时段` | `sessOf/sessOn/lastSess/exInSess/mountSessPicker` |
+| `每日锻炼输出` | `dayText(date,sess)` / `dayCSV(date,sess)` / `exportDaySheet(date,sess)` |
 | `分化管理` | 三层 sheet：`planSheet` → `planEditSheet` → `planDaySheet` |
 | `趋势` | 近 7 天条形图 |
 | `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
@@ -126,15 +128,16 @@ let roNew   // 常规搭配里正在手填的那一样，重画不丢
 let dayFold // 训练页每天的折叠状态，只记手动翻过的，不进 S
 let mgPart  // 动作管理里当前展开的部位
 let pickPart// 部位选择器当前展开的部位
+let exSess  // 添加/编辑动作时选中的时段号
 ```
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 9`）
+### 数据模型（`S`，schema `v: 10`）
 
 ```js
 {
-  v: 9,
+  v: 10,
   weight: 70,                    // 目标体重：只用来算营养目标，跟 weights 无关
   kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
@@ -142,7 +145,8 @@ let pickPart// 部位选择器当前展开的部位
   entries: [{ id, date, meal, name, g, u, c, p, f, ts }],
               // g 是分量数值，u 是它的单位（"g" / "ml"）
               // c/p/f 是这一条的绝对克数（不是每份）
-  workouts: [{ id, date, name, ss: [{ reps, wt }, …], sets, reps, wt, dur, note, ts }],
+  workouts: [{ id, date, sess, name, ss: [{ reps, wt }, …], sets, reps, wt, dur, note, ts }],
+              // sess 是时段号（1 起，一天练两次就 1/2）
               // ss 是每组的真相；sets/reps/wt 是从它算出来的汇总值
               // 用不到的字段存 0 / ""
   weights:  { "2026-07-31": { v: 72.5, ts } },              // kg
@@ -323,6 +327,24 @@ let pickPart// 部位选择器当前展开的部位
 - 训练页每行右侧显示这个重量：做完了显示实做值（亮色），没做显示计划值或历史值（`.vol.ghost` 暗色）作提示。
 - 进展曲线的默认指标就是它（`metricOf` 的 `top`）。**曾经是 Epley 预估 1RM 和训练容量，都已经去掉了** —— 别再加回来。
 
+### 时段：一天练两次（`sess`）
+
+`workouts[].sess` 是 1 起的时段号。**绝大多数日子只有 1，那时界面完全不显示这一层** —— 这是刻意的渐进披露，单段日子跟以前长得一模一样。
+
+- `sessOf(w)` 兜底成 1，所以漏字段也不会炸；`sessOn(date)` 给当天有记录的段号升序，没记录给 `[1]`。
+- 训练页：计划勾选行仍是**天级**的（分化按天排），时段分组只作用于「计划外」的记录。段数 ≥2 时每段一个 `训练 N` 小标题 + 自己的「输出」按钮；只有 1 段时退回原来的「计划外」标签。
+- **打勾一律落在第 1 段**（`togglePlanItem` 写死 `sess: 1`）。真在第二段练的，进记录里改段号即可。
+- `exSheet` 里有时段 chip，新记录默认落在 `lastSess(date)`，编辑时是它自己那段；「+ 新时段」给 `max+1`。改段号保存就等于把记录搬过去。
+- 输出：`dayText(date, sess)` / `dayCSV(date, sess)`。给了 `sess` 只出那一段；不给且当天多段时，正文里插 `【训练 N】` 分段标题。**这正是为了对上 WHOOP 里一天两个 activity 的分法。**
+- 两个训练 CSV 都加了「时段」列。
+- 进展曲线不受影响 —— `exSessions()` 按**日期**聚合，同一天两段的同一动作仍并成一次课。
+
+### 一键粘贴
+
+`pasteInto(id)` 用 `navigator.clipboard.readText()` 直接填输入框，用在两处需要粘贴的地方：粘贴 JSON 的引导（粘完直接试解析，成了就跳确认清单）、食物库导入。
+
+**读剪贴板是权限门控的**：iOS 上会弹系统粘贴确认，被拒或浏览器不支持时退回「长按输入框手动粘贴」的提示 —— **不要假装成功**。headless 里测不出真实行为，测试只保证结构和兜底分支存在。
+
 ### 每日锻炼输出 / WHOOP（别再去试直接导入了）
 
 `exportDaySheet(date)` 把当天练的排成一份纯文本清单（`dayText()`），外加当天 CSV（`dayCSV()`）。入口两个：训练页每天右上的「输出」（只在当天有记录时出现）、今日页的训练汇总行。
@@ -394,7 +416,7 @@ let pickPart// 部位选择器当前展开的部位
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-04.2"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-10"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
@@ -449,6 +471,9 @@ bash /mnt/d/FangzhengHuang/projects/_cluster_status/request_poll.sh "<项目>: <
 MFA 纪律：master 过期时由**用户本人**在 WSL 执行 `ssh -fN <别名>` 确认 Duo；
 Claude 不代做 MFA。协议细节见 `_cluster_status/README.md`，
 集群运维经验见 `sa3c-fpn/docs/CLUSTER_OPS.md`。
+
+**调度机制**（优先级公式、FairShare 定义链、`bN` 墙钟档位、backfill 预留门槛）：
+`sa3c-fpn/docs/CLUSTER_FAIRSHARE_AND_SCHEDULING.md` —— 投递决策表在其 §7.1。
 
 **要决定往哪个集群投作业**：查 `sa3c-fpn/docs/CLUSTER_OPS.md` **§5.6 投递决策表**
 （基于 390+ 作业的 `sacct` 实测：服务率、pending 分位数、GPU/节点/墙钟分桶）。

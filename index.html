@@ -293,7 +293,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-09-04.2";
+const APP_VERSION = "2026-09-10";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -357,7 +357,7 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 9, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 10, weight: 70, kc: 3, kp: 1.7, kf: 1,
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
     parts: PARTS.map(p => ({ name: p.name, items: p.items.slice() })), partsTs: 0,
@@ -422,6 +422,12 @@ function migrate(o) {
     s.parts = Array.isArray(o.parts) && o.parts.length ? o.parts : b.parts;
     s.partsTs = o.partsTs || 0;
     s.v = 9;
+  }
+  if (!o.v || o.v < 10) {
+    // 时段：老记录一律算第 1 个时段，别的字段一个不动
+    s.workouts = (s.workouts || []).map(w =>
+      sessOf(w) === (w.sess || 0) ? w : Object.assign({}, w, { sess: sessOf(w) }));
+    s.v = 10;
   }
   // 目录规整：部位名去空、动作名去重去空；整个空了就退回出厂清单
   s.parts = (s.parts || []).map(p => ({
@@ -510,6 +516,23 @@ function legacyCopy(text) {
   if (old) { sel.removeAllRanges(); sel.addRange(old); }
   return ok;
 }
+/* 一键粘贴：直接读剪贴板填进输入框。iOS 上会弹系统的粘贴确认，
+   被拒或浏览器不支持时退回「自己长按粘贴」，不假装成功。 */
+async function pasteInto(id) {
+  const el = document.getElementById(id);
+  if (!el) return false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.readText) {
+      const t = await navigator.clipboard.readText();
+      if (t && t.trim()) { el.value = t; toast("已粘贴"); return true; }
+      toast("剪贴板是空的");
+      return false;
+    }
+  } catch (e) {}
+  el.focus();
+  toast("这个浏览器不让读剪贴板，长按输入框手动粘贴");
+  return false;
+}
 async function copyText(text) {
   if (navigator.clipboard && window.isSecureContext) {
     try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
@@ -566,6 +589,19 @@ function reSum(w) {
   return w;
 }
 function totalReps(w) { return setsOf(w).reduce((a, x) => a + (x.reps || 0), 0); }
+
+/* ---------------- 时段（一天练两次） ----------------
+   sess 是 1 起的时段号。绝大多数日子只有 1，那时界面完全不显示时段这层。 */
+function sessOf(w) { const n = parseInt(w.sess, 10); return isFinite(n) && n > 0 ? n : 1; }
+/* 当天有记录的时段号，升序；没记录就给 [1] */
+function sessOn(date) {
+  const seen = {};
+  for (const w of exOn(date)) seen[sessOf(w)] = 1;
+  const ns = Object.keys(seen).map(Number).sort((a, b) => a - b);
+  return ns.length ? ns : [1];
+}
+function lastSess(date) { const ns = sessOn(date); return ns[ns.length - 1]; }
+function exInSess(date, n) { return exOn(date).filter(w => sessOf(w) === n); }
 /* 每组明细的紧凑写法：各组一致就写 4×8 @62.5kg，不一致就逐组列 */
 function setsText(w) {
   const ss = setsOf(w);
@@ -610,7 +646,8 @@ function togglePlanItem(date, it) {
     // 按计划的组数铺成每组一条，重量优先用计划里设的稳定重量
     const wt = it.wt || workWt(it.name, date), ss = [];
     for (let i = 0; i < (it.sets || 0); i++) ss.push({ reps: it.reps || 0, wt });
-    S.workouts.push(reSum({ id: newId(), date, name: it.name, ss, dur: 0, note: "", ts: Date.now() }));
+    // 计划是按天排的，打勾一律落在第 1 段；真在第二段练的可以进去改
+    S.workouts.push(reSum({ id: newId(), date, name: it.name, sess: 1, ss, dur: 0, note: "", ts: Date.now() }));
     save(); queueSync();
   }
   render();
@@ -670,7 +707,7 @@ function renderToday() {
   scroll.querySelector("#prevd").onclick = () => { cursor = shiftDay(cursor, -1); render(); };
   scroll.querySelector("#nextd").onclick = () => { cursor = shiftDay(cursor, 1); render(); };
   scroll.querySelectorAll("[data-del]").forEach(b => b.onclick = () => { removeRec("entries", b.dataset.del); render(); });
-  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd));
+  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd, b.dataset.xs ? +b.dataset.xs : 0));
   scroll.querySelectorAll("[data-eedit]").forEach(b => b.onclick = () =>
     manualSheet(S.entries.find(x => x.id === b.dataset.eedit)));
 }
@@ -696,11 +733,11 @@ function renderComposer() {
 
 /* ---------------- 训练 ---------------- */
 /* 每天可折叠。只记用户手动翻过的那几天（内存里，不进 S）：
-   没翻过就用默认 —— 今天、以及有计划或有记录的日子展开，空日子收起。 */
+   没翻过就只展开当天，其余一律收起。 */
 let dayFold = {};
 function dayOpen(d, tk, st, ex) {
   if (d in dayFold) return dayFold[d];
-  return d === tk || !!st || ex.length > 0;
+  return d === tk;   // 只展开当天，别的手动点开
 }
 function renderTrain() {
   const days = []; for (let i = 0; i < 7; i++) days.push(shiftDay(wkCursor, i));
@@ -757,13 +794,23 @@ function renderTrain() {
           <b>${esc(it.name)}</b><i>${rec ? descOf(rec) : planDesc(it)}</i></div>
         <div class="vol${rec ? "" : " ghost"}">${wt ? r1(wt) + " kg" : ""}</div></div>`;
     });
+    // 计划外的记录按时段分组。只有一个时段时不显示这层，界面跟以前一样。
     const extra = ex.filter(w => !taken[w.id]);
-    if (st && extra.length) h += `<div class="subhead">计划外</div>`;
+    const ns = sessOn(d), multi = ns.length > 1;
     if (!st && !extra.length) h += `<div class="dayempty">—</div>`;
-    for (const w of extra) {
-      h += `<div class="exrow" data-edit="${w.id}">
-        <div class="ex1"><b>${esc(w.name)}</b><i>${descOf(w)}</i></div>
-        <div class="vol">${w.wt ? r1(w.wt) + " kg" : ""}</div></div>`;
+    for (const n of ns) {
+      const rows = extra.filter(w => sessOf(w) === n);
+      if (!rows.length && !(multi && exInSess(d, n).length)) continue;
+      if (multi) h += `<div class="dayhead" style="margin-top:8px">
+        <span class="subhead" style="margin:0">训练 ${n}</span>
+        <button class="add" data-xd="${d}" data-xs="${n}" style="margin-left:auto">输出</button></div>`;
+      else if (st && rows.length) h += `<div class="subhead">计划外</div>`;
+      for (const w of rows) {
+        h += `<div class="exrow" data-edit="${w.id}">
+          <div class="ex1"><b>${esc(w.name)}</b><i>${descOf(w)}</i></div>
+          <div class="vol">${w.wt ? r1(w.wt) + " kg" : ""}</div></div>`;
+      }
+      if (multi && !rows.length) h += `<div class="dayempty" style="padding:4px 0">这一段的动作都在上面的计划里</div>`;
     }
     h += `</div>`;
   });
@@ -785,7 +832,7 @@ function renderTrain() {
     exSheet(null, x.d, { name: x.it.name, sets: x.it.sets, reps: x.it.reps, wt: x.it.wt || workWt(x.it.name, x.d) });
   });
   scroll.querySelectorAll("[data-add]").forEach(b => b.onclick = () => exSheet(null, b.dataset.add));
-  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd));
+  scroll.querySelectorAll("[data-xd]").forEach(b => b.onclick = () => exportDaySheet(b.dataset.xd, b.dataset.xs ? +b.dataset.xs : 0));
   scroll.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => {
     exSheet(S.workouts.find(w => w.id === b.dataset.edit), null);
   });
@@ -797,51 +844,74 @@ function dowOf(date) {
   const [y, m, d] = date.split("-").map(Number);
   return DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
 }
-function dayText(date) {
-  const ex = exOn(date), st = planStat(date);
-  const head = date + " " + dowOf(date) + (st && st.day.name ? " · " + st.day.name : "");
-  if (!ex.length) return head + "\n（当天没有训练记录）";
-  const lines = ex.map((w, i) => {
-    const b = [];
-    const st = setsText(w);
-    if (st) b.push(st);
-    if (w.dur) b.push(r1(w.dur) + "min");
-    if (w.note) b.push(w.note);
-    return (i + 1) + ". " + w.name + (b.length ? "  " + b.join(" ") : "");
-  });
-  const sets = ex.reduce((a, w) => a + (w.sets || 0), 0);
-  return head + "\n" + lines.join("\n") + "\n—— " + ex.length + " 个动作 · " + sets + " 组";
+function exLine(w, i) {
+  const b = [];
+  const t = setsText(w);
+  if (t) b.push(t);
+  if (w.dur) b.push(r1(w.dur) + "min");
+  if (w.note) b.push(w.note);
+  return (i + 1) + ". " + w.name + (b.length ? "  " + b.join(" ") : "");
 }
-function dayCSV(date) {
-  const head = "日期,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
-  const rows = exOn(date).map(w => [date, PART_OF[w.name] || "",
+/* sess 给了就只输出那一段；不给且当天有多段时分段列出来 ——
+   正好对上 WHOOP 里一天两个 activity 的分法 */
+function dayText(date, sess) {
+  const st = planStat(date), ns = sessOn(date);
+  const one = sess > 0;
+  const ex = one ? exInSess(date, sess) : exOn(date);
+  const head = date + " " + dowOf(date)
+    + (st && st.day.name ? " · " + st.day.name : "")
+    + (one ? " · 训练 " + sess : "");
+  if (!ex.length) return head + "\n（" + (one ? "这一段" : "当天") + "没有训练记录）";
+  const sets = ex.reduce((a, w) => a + (w.sets || 0), 0);
+  const tail = "\n—— " + ex.length + " 个动作 · " + sets + " 组";
+  if (one || ns.length < 2) return head + "\n" + ex.map(exLine).join("\n") + tail;
+  let body = "";
+  for (const n of ns) {
+    const rows = exInSess(date, n);
+    if (!rows.length) continue;
+    body += "\n【训练 " + n + "】\n" + rows.map(exLine).join("\n");
+  }
+  return head + body + tail;
+}
+function dayCSV(date, sess) {
+  const head = "日期,时段,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
+  const rows = (sess > 0 ? exInSess(date, sess) : exOn(date)).map(w => [date, sessOf(w), PART_OF[w.name] || "",
     '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "", w.wt || "",
     '"' + setsCSV(w) + '"', w.dur || "",
     '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",")).join("\n");
   return "\ufeff" + head + rows;
 }
-function exportDaySheet(date) {
-  const ex = exOn(date);
+function exportDaySheet(date, sess) {
+  const ns = sessOn(date), one = sess > 0;
+  const ex = one ? exInSess(date, sess) : exOn(date);
   const canShare = typeof navigator.share === "function";
+  const tag = one ? " · 训练 " + sess : "";
+  let pick = "";
+  if (!one && ns.length > 1) pick = `<div class="chips" style="margin-bottom:8px">${ns.map(n =>
+    `<button class="chip" data-xsw="${n}">只要训练 ${n}</button>`).join("")}</div>`;
   openSheet(`<h3>锻炼输出</h3>
-    <div class="sh-sub">${date} ${dowOf(date)} · ${ex.length} 个动作</div>
+    <div class="sh-sub">${date} ${dowOf(date)}${tag} · ${ex.length} 个动作${
+      !one && ns.length > 1 ? " · 分 " + ns.length + " 段" : ""}</div>
+    ${pick}
     <div class="step"><b>1</b><div>复制这份清单（可以直接改）
-      <textarea id="xd_txt" spellcheck="false" style="height:150px">${esc(dayText(date))}</textarea></div></div>
-    <div class="step"><b>2</b><div>打开 WHOOP → Strength Trainer，照着清单把动作和组次重量填进去。<br>
+      <textarea id="xd_txt" spellcheck="false" style="height:150px">${esc(dayText(date, sess))}</textarea></div></div>
+    <div class="step"><b>2</b><div>打开 WHOOP → Strength Trainer，照着清单把动作和组次重量填进去。
+      一天练两次就分两段输出，正好对上 WHOOP 里的两个 activity。<br>
       <b>WHOOP 的开放接口是只读的</b>，Strength Trainer 的组次重量既读不到也写不进，
       外部程序没有任何受支持的方式能直接导进去，这一步只能手动。</div></div>
     <div class="btnrow">
-      <button id="xd_copy">复制清单</button>
+      <button class="pri" id="xd_copy">复制清单</button>
       ${canShare ? `<button id="xd_share">分享…</button>` : ""}
-      <button id="xd_csv">当天 CSV</button>
+      <button id="xd_csv">CSV</button>
     </div>
     <div class="sheetact"><button class="go" id="xd_done">完成</button></div>`);
   const g = id => document.getElementById(id);
+  document.querySelectorAll("[data-xsw]").forEach(b => b.onclick = () => exportDaySheet(date, +b.dataset.xsw));
   g("xd_copy").onclick = async () => toast(await copyText(g("xd_txt").value) ? "已复制，去 WHOOP 照着填" : "复制失败，请长按文本框手动复制");
-  g("xd_csv").onclick = () => download("macros_训练_" + date + ".csv", dayCSV(date), "text/csv");
+  g("xd_csv").onclick = () => download("macros_训练_" + date + (one ? "_训练" + sess : "") + ".csv", dayCSV(date, sess), "text/csv");
   if (canShare) g("xd_share").onclick = async () => {
     // 用户在系统分享面板里点取消也会 reject，别当成失败弹提示
-    try { await navigator.share({ title: "锻炼 " + date, text: g("xd_txt").value }); } catch (e) {}
+    try { await navigator.share({ title: "锻炼 " + date + tag, text: g("xd_txt").value }); } catch (e) {}
   };
   g("xd_done").onclick = closeSheet;
 }
@@ -907,6 +977,8 @@ function exSheet(rec, date, pre) {
   if (!rec) h += `<div id="ppick"></div>`;
   h += `<div class="frow"><div class="fcell text" style="flex:1">
       <label>动作名称</label><input id="e_name" value="${esc(w.name)}" placeholder="深蹲 / 跑步"></div></div>
+    <div class="subhead">时段 · 一天练两次就分开记</div>
+    <div class="chips" style="margin-bottom:10px" id="esess"></div>
     <div class="subhead">每组的次数和重量</div>
     <div class="daylist" id="esets"></div>
     <div class="subhead">时长与备注 · 选填</div>
@@ -923,6 +995,9 @@ function exSheet(rec, date, pre) {
   // 每组明细单独放一份副本，增删组时只重画列表，不碰已填好的名称/时长/备注
   exSets = setsOf(w).map(x => ({ reps: x.reps || 0, wt: x.wt || 0 }));
   mountSetList();
+  // 时段：新记录默认落在当天最后一段，编辑时就是它自己那段
+  exSess = rec ? sessOf(rec) : lastSess(w.date);
+  mountSessPicker(w.date);
   // 从目录选中动作时，没填过组就按 3×10 铺开，重量带出这个动作的稳定重量
   if (!rec) mountPartPicker("ppick", n => {
     g("e_name").value = n;
@@ -940,7 +1015,7 @@ function exSheet(rec, date, pre) {
     grabSets();
     const num = id => { const v = parseFloat(g(id).value); return isFinite(v) && v > 0 ? v : 0; };
     const body = reSum({
-      date: w.date, name, ss: exSets.map(x => ({ reps: x.reps || 0, wt: x.wt || 0 })),
+      date: w.date, name, sess: exSess, ss: exSets.map(x => ({ reps: x.reps || 0, wt: x.wt || 0 })),
       dur: num("e_dur"), note: g("e_note").value.trim(), ts: Date.now()
     });
     if (!body.sets && !body.dur) { toast("至少加一组，或者填个时长"); return; }
@@ -948,6 +1023,25 @@ function exSheet(rec, date, pre) {
     else S.workouts.push(Object.assign({ id: newId() }, body));
     save(); closeSheet(); render(); queueSync();
   };
+}
+
+/* ---------------- 时段选择 ---------------- */
+let exSess = 1;
+function mountSessPicker(date) {
+  const el = document.getElementById("esess");
+  if (!el) return;
+  const ns = sessOn(date);
+  const max = ns[ns.length - 1];
+  const opts = ns.slice();
+  if (opts.indexOf(exSess) < 0) opts.push(exSess);
+  opts.sort((a, b) => a - b);
+  el.innerHTML = opts.map(n =>
+    `<button class="chip${n === exSess ? " on" : ""}" data-es="${n}">训练 ${n}</button>`).join("")
+    + `<button class="chip act" data-es="${max + 1}">+ 新时段</button>`;
+  el.querySelectorAll("[data-es]").forEach(b => b.onclick = () => {
+    exSess = +b.dataset.es;
+    mountSessPicker(date);
+  });
 }
 
 /* ---------------- 每组编辑 ---------------- */
@@ -1633,7 +1727,7 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 9, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 10, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
     plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas,
@@ -1823,7 +1917,8 @@ function libImportSheet() {
       液体单位写 <b>ml</b>，一份 = <b>250 ml</b>。模板里的数值只是示例，换成你包装上的。
       <div class="btnrow"><button id="li_copy">复制模板</button><button id="li_dl">下载 CSV 模板</button></div></div></div>
     <div class="step"><b>2</b><div>填好后整段粘回这里，表头那行留着
-      <textarea id="li_txt" spellcheck="false">${esc(LIB_TPL)}</textarea></div></div>
+      <textarea id="li_txt" spellcheck="false">${esc(LIB_TPL)}</textarea>
+      <div class="btnrow"><button class="pri" id="li_paste">一键粘贴</button></div></div></div>
     <div class="step"><b>3</b><div>也可以直接选文件导入。老的四列格式（没有单位列）仍然认，按固体处理
       <div class="btnrow"><button id="li_file">从文件导入…</button></div></div></div>
     <div class="fld" style="border-bottom:none">
@@ -1838,6 +1933,7 @@ function libImportSheet() {
   g("li_copy").onclick = async () => toast(await copyText(LIB_TPL) ? "已复制模板" : "复制失败");
   g("li_dl").onclick = () => download("macros_foodlib_template.csv", "\ufeff" + LIB_TPL, "text/csv");
   g("li_cancel").onclick = showLib;
+  g("li_paste").onclick = () => pasteInto("li_txt");
   g("li_go").onclick = () => { if (importLibText(g("li_txt").value, g("li_ow").classList.contains("on"))) showLib(); };
   g("li_file").onclick = () => {
     const inp = document.createElement("input");
@@ -2148,7 +2244,8 @@ function pasteSheet(text) {
       还没建过？先到「设置 → 营养查询 → 复制项目指令」。
       <div class="btnrow"><button id="p_copyp">复制项目指令</button></div></div></div>
     <div class="step"><b>3</b><div>把返回的 JSON 整段粘到这里
-      <textarea id="p_json" placeholder='{"items":[{"name":"鸡胸肉","amount":150,"unit":"g",...}]}'></textarea></div></div>
+      <textarea id="p_json" placeholder='{"items":[{"name":"鸡胸肉","amount":150,"unit":"g",...}]}'></textarea>
+      <div class="btnrow"><button class="pri" id="p_paste">一键粘贴</button></div></div></div>
     <div class="sheetact">
       <button class="ghost" id="p_cancel">取消</button>
       <button class="go" id="p_go">解析</button></div>`);
@@ -2156,6 +2253,12 @@ function pasteSheet(text) {
   g("p_copyq").onclick = async () => toast(await copyText(text) ? "已复制，去 Claude App 粘贴" : "复制失败，请长按输入框手动复制");
   g("p_copyp").onclick = async () => toast(await copyText(SYS) ? "已复制项目指令" : "复制失败");
   g("p_cancel").onclick = closeSheet;
+  // 粘完直接试着解析，成了就跳到确认清单，省一次点击
+  g("p_paste").onclick = async () => {
+    if (!await pasteInto("p_json")) return;
+    const items = parseItems(g("p_json").value);
+    if (items) review(items);
+  };
   g("p_go").onclick = () => {
     const items = parseItems(g("p_json").value);
     if (!items) { toast("没解析出条目，确认粘的是完整 JSON"); return; }
@@ -2340,11 +2443,11 @@ function exportCSV() {
   download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }
 function exportWorkoutCSV() {
-  const head = "日期,星期,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
+  const head = "日期,星期,时段,部位,动作,组数,典型次数,稳定重量kg,每组明细,时长min,备注\n";
   const rows = S.workouts.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(w => {
     const [y, m, d] = w.date.split("-").map(Number);
     const dw = DOW[(new Date(y, m - 1, d).getDay() + 6) % 7];
-    return [w.date, dw, PART_OF[w.name] || "", '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
+    return [w.date, dw, sessOf(w), PART_OF[w.name] || "", '"' + w.name.replace(/"/g, '""') + '"', w.sets || "", w.reps || "",
       w.wt || "", '"' + setsCSV(w) + '"', w.dur || "",
       '"' + (w.note || "").replace(/"/g, '""') + '"'].join(",");
   }).join("\n");
