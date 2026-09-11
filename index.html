@@ -30,7 +30,8 @@ button{background:none;border:none;padding:0;cursor:pointer}
   padding:calc(env(safe-area-inset-top) + 8px) 16px 12px}
 #tabbar{display:flex;border-top:1px solid var(--line);background:var(--surface);
   padding-bottom:env(safe-area-inset-bottom);flex:none}
-#tabbar button{flex:1;padding:11px 0 9px;font-size:11px;letter-spacing:.06em;color:var(--ink-faint);
+/* 按钮高 46px：图标 15 + 间隔 3 + 文字 16 + 上下 7/5，仍在 44px 触控下限之上 */
+#tabbar button{flex:1;padding:7px 0 5px;font-size:11px;letter-spacing:.06em;color:var(--ink-faint);
   display:flex;flex-direction:column;align-items:center;gap:3px}
 #tabbar button .g{font-family:var(--mono);font-size:15px;line-height:1}
 #tabbar button.on{color:var(--ink)}
@@ -156,8 +157,11 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .sess .sv{flex:1;min-width:0;color:var(--ink-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sess .sm{flex:none;color:var(--lift);text-align:right}
 
+/* 注意底部内边距只有 9px：composer 下面还有 tabbar，它不贴屏幕底，
+   安全区由 tabbar 负责。这里再加一遍 env(safe-area-inset-bottom) 会在
+   hint 行和 tabbar 之间白白多出一条约 34px 的空白。 */
 #composer{flex:none;background:var(--surface);border-top:1px solid var(--line);
-  padding:9px 12px calc(env(safe-area-inset-bottom) + 9px)}
+  padding:9px 12px 9px}
 /* 非「今日」页时 render() 只清空内容，元素还在；不收掉的话
    边框 + 安全区内边距会在 tabbar 上方留一条空白 */
 #composer:empty{display:none}
@@ -293,7 +297,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-09-10";
+const APP_VERSION = "2026-09-11";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -719,7 +723,7 @@ function renderComposer() {
       <button class="chip act" data-romg="1">⚙</button></div>` : ""}
     <div class="chips">${MEALS.map(m =>
     `<button class="chip${m === meal ? " on" : ""}" data-meal="${m}">${m}</button>`).join("")}</div>
-    <div class="cbar"><textarea id="inp" rows="1" placeholder="吃了什么？例如：150g鸡胸 + 一碗米饭"></textarea>
+    <div class="cbar"><textarea id="inp" rows="1" placeholder="吃了什么？例如 150g 鸡胸"></textarea>
     <button id="man" class="alt">手动</button><button id="go">记录</button></div>
     <div class="hint" id="hint">库内直接命中 · 新食物用 Claude App 查后粘回</div>`;
   composer.querySelectorAll("[data-ruse]").forEach(b => b.onclick = () => applyRoutine(b.dataset.ruse));
