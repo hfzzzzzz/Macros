@@ -66,7 +66,9 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 - `2026-09-04`：52 项，三件事 —— 训练页每天可折叠（默认规则、手动翻页、收起后表头摘要与按钮仍在、状态不进 S）、动作管理（增/删/改部位、未归类动作归位、恢复出厂、partsTs 单独 LWW 不串设置）、趋势热量改近 7 天；外加一轮冒烟。
 - `2026-09-04.2`：42 项，常规搭配可以手动管理 —— 空食物库也能建、手填的食物就地存进库（固体/液体两种一份大小、上限校验）、标红条目点一下补营养值、库存筛选只重画 chip、保存与应用链路，外加版面不重叠和一轮冒烟。
 - `2026-09-10`：52 项，三件事 —— 默认只展开当天（含翻周时一天都不开）、时段（v9→v10 补 sess=1 且别的不动、单段时界面完全不显示这层、分组/分段输出/分段 CSV/选择器/改段号搬家）、一键粘贴；外加一轮冒烟。
-- `2026-09-11`（当前）：52 项（沿用上一轮，纯版面改动无新断言）。另用量尺脚本核对底部占用从 274px 降到 232px、tab 按钮 46px 仍过 44px 触控线、输入框 placeholder 不再被截。
+- `2026-09-11`：52 项（沿用上一轮，纯版面改动无新断言）。另用量尺脚本核对底部占用从 274px 降到 232px、tab 按钮 46px 仍过 44px 触控线、输入框 placeholder 不再被截。
+- `2026-09-11.2`（当前）：93 项，按星期分配饮食目标 —— 出厂表逐天逐系数核对、`v10→v11` 迁移（补字段 / 不动统一系数 / 已有 `dayK` 不被覆盖 / 长度与类型规整）、`coefOn` 在起始日前后的分流与七天取值、`targets(date)` 的数字、历史日期目标一字不变、`dayK` 走 `settingsTs` 但老对端不会抹掉它、设置页七行编辑器（读写 / 夹负数 / trim / 恢复出厂 / 起始日开关 / 转义）、今日页与趋势页按当天目标、CSV 的日型列；外加七行版面不出界不重叠和一轮冒烟。
+  一条断言当场改过：趋势页恒为「今天往前 7 天」，跟 `cursor` 无关，原来的 fixture 把记录放在了窗口外 —— 代码没问题，是断言写错了。
 
 ## 设计约束（改代码前先读）
 
@@ -88,7 +90,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | 常量 | `KCAL`、餐次、星期、`baseOf()` 单位基准、`PARTS` 出厂动作目录 |
 | `state` | `blank()` / `migrate()` / `load()` / `save()` |
 | `date helpers` | 日期全部用 `"YYYY-MM-DD"` 字符串，不用 Date 对象传递 |
-| `computed` | `lastWeight()` / `targets()` / `eatenOn()` / `exOn()` / `workWt()` |
+| `computed` | `lastWeight()` / `coefOn()` / `targets(date)` / `eatenOn()` / `exOn()` / `workWt()` |
 | `render` | `render()` 总调度 + 四个 tab 的渲染函数 |
 | `训练计划` | `curPlan/planDay/planStat/doneRec/workWt/togglePlanItem` |
 | `部位选择器` | `mountPartPicker()` —— 两级 chip，加动作和排分化共用 |
@@ -101,7 +103,7 @@ Start-Process $edge -ArgumentList '--headless=new','--disable-gpu','--no-sandbox
 | `趋势` | 近 7 天条形图 |
 | `体重与维度` | `weightSeries/measSeries/seriesBlock/bodyCards/bodySheet` |
 | `动作进展` | `exSessions/metricOf/curveSVG/progressCard` |
-| `设置` | 饮食目标（目标体重+系数）、身体记录入口、同步配置、数据导入导出 |
+| `设置` | 饮食目标（目标体重+统一系数）、按星期分配（dayFrom + 七天系数）、身体记录入口、同步配置、数据导入导出 |
 | `records / tombstones` | `newId()` / `removeRec()` |
 | `merge` | 本地 ↔ 远端的合并算法 |
 | `Gist sync` | GitHub API 封装、创建 gist、`syncNow()`、`queueSync()` |
@@ -134,13 +136,15 @@ let exSess  // 添加/编辑动作时选中的时段号
 
 改完 `S` 之后的标准三连：`save(); render(); queueSync();`
 
-### 数据模型（`S`，schema `v: 10`）
+### 数据模型（`S`，schema `v: 11`）
 
 ```js
 {
-  v: 10,
+  v: 11,
   weight: 70,                    // 目标体重：只用来算营养目标，跟 weights 无关
-  kc: 3, kp: 1.7, kf: 1,         // 碳水/蛋白/脂肪，g per kg 体重
+  kc: 3, kp: 1.7, kf: 1,         // 统一系数，g per kg 体重；只管 dayFrom 之前的日子
+  dayFrom: "2026-09-14",         // 从这天起按星期分配；空串 = 整个功能关掉
+  dayK: [{ n: "胸", c: 3, p: 1.5, f: 0.5 }, … ],  // 恒为 7 项，周一..周日
   settingsTs: 0,                 // 上述设置整体的 last-write-wins 时间戳
 
   entries: [{ id, date, meal, name, g, u, c, p, f, ts }],
@@ -173,7 +177,8 @@ let exSess  // 添加/编辑动作时选中的时段号
 ```
 
 计算规则：
-- 目标 = `S.weight` × 系数，跟日期无关。**体重记录不参与计算**，见下面一节。
+- 目标 = `S.weight` × **当天的**系数，系数由 `coefOn(date)` 给：`dayFrom` 及之后按星期取
+  `dayK[dowIndex(date)]`，之前一律用统一的 `kc/kp/kf`。**体重记录不参与计算**，见下面一节。
 - 热量 = `c*4 + p*4 + f*9`（`KCAL` 常量）。
 
 ### 目标体重 vs 体重记录（两回事，别再合起来）
@@ -187,9 +192,34 @@ let exSess  // 添加/编辑动作时选中的时段号
 
 - **`bodySheet()` 绝不写 `S.weight`，设置页那个框也绝不写 `S.weights`。** 以前是耦合的（记一次体重就顺手改了目标，历史日期还会按当日体重反算历史目标），`2026-08-03.4` 拆开了。别再加回任何一边的联动。
 - 要让目标跟上最新体重，得在设置页**主动点**「目标体重改用 X kg」——这个按钮只在两者相差超过 0.05 kg 时出现。
-- `targets()` **不接受日期参数**了，所有日期的目标都一样。趋势页的达成率、CSV 的目标列都跟着变成常量。
+- `targets(date)` **要传日期**（系数按星期变，见下一节）；但**目标体重永远是 `S.weight` 这一个数**，
+  不随日期变 —— 当年拆开就是为了不再按当日体重反算历史目标，这一条没有回退。
 - `lastWeight()` 只是给设置页做参考显示和上面那个按钮用的，别拿它去算目标。
 - 迁移 `v6 → v7` 时用老算法取了一次当时的值写进 `S.weight`，所以**升级前后每日目标完全一致**，用户不会突然发现目标变了。
+
+### 按星期分配：训练日 vs 休息日（`dayK` / `dayFrom`）
+
+练大肌群的日子吃更多碳水，休息日回落。系数**按星期**走，不看当天排了什么分化 ——
+`dayK` 里的 `n`（胸 / 背 / 休息…）**只是标签**，不参与任何计算，也不跟 `S.plans` 联动。
+
+| | 存在哪 | 管哪些日期 |
+|---|---|---|
+| 统一系数 | `S.kc` / `S.kp` / `S.kf` | `dayFrom` **之前**的日子 |
+| 七天系数 | `S.dayK[0..6]`（周一 = 0） | `dayFrom` **当天及之后** |
+
+- **`coefOn(date)` 是唯一的分流点**，`targets(date)` 只是拿它乘目标体重。新代码要取某天的系数走这个函数，
+  别自己读 `S.kc` —— 那样在 9/14 之后会算错。
+- `targets()` **不传日期就退回统一系数**（`date` 为空时 `coefOn` 直接走 else 分支）。这是刻意的兜底：
+  漏改的调用点会退回老行为而不是报错。设置页也靠 `targets("")` 显示「起始日之前」那一档。
+- **`dayFrom` 存在的意义就是不改写历史。** 出厂值 `DAYK_FROM = "2026-09-14"`，升级前的每一天仍按老的
+  统一系数算，趋势页的达成率、CSV 的目标列一个数都不动。改这个日期等于重算它之后所有日子的目标，别乱动。
+- `dayFrom` 留空 = 整个功能关掉，全部日期回到统一系数。设置页里清空「起始日」就是这个效果，七行编辑器跟着收起。
+- `DAYK` 常量只是**出厂清单**（跟 `PARTS` 一个套路），真正在用的是 `S.dayK`。`blank()` 和「恢复出厂分配」
+  都必须 `DAYK.map(d => Object.assign({}, d))` **拷一份**，直接引用会被用户编辑污染掉常量。
+- `migrate()` 里有一段无条件的七天系数规整：长度不是 7 就退回出厂、数值一律 `Number()`、名称缺了补出厂名。
+  跟目录规整一样放在所有版本块**之后**，所以从任何老版本迁上来都不会留下半残的 `dayK`。
+- 今日页日期栏显示的是当天的标签（`2026-09-19 · 腿 70kg`）；`dayFrom` 之前的日子仍显示 `目标 70kg`。
+  饮食 CSV 末尾多了一列「日型」，也是这个标签。
 
 ### 单位：一份 = 100 g 或 250 ml
 
@@ -219,7 +249,7 @@ let exSess  // 添加/编辑动作时选中的时段号
 | `weights` / `meas` / `lib` | 按 key（日期 / 食物名）逐条 last-write-wins（比 `ts`）；`lib` 再用 `libTomb` 过滤一遍 |
 | `tomb` / `libTomb` | 取并集，取较晚的时间戳；剪掉 120 天前的 |
 | `parts`（动作目录） | 整体按 `partsTs` LWW，**跟设置分开**，改目录不会覆盖体重系数 |
-| 设置（weight/kc/kp/kf/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空 |
+| 设置（weight/kc/kp/kf/dayK/dayFrom/activePlan） | 整体按 `settingsTs` last-write-wins；合并后若选中的分化已不存在会自动清空。`dayK`/`dayFrom` 多一道守卫：远端**没带**这两个字段（老版本的对端）时保留本机的，别被抹成空 |
 
 触发点：`queueSync()`（4 秒防抖）、页面重新可见、`online` 事件、设置页手动按钮。`#syncdot` 是右上角状态灯（灰=闲 / 橙=同步中 / 绿=成功 / 红=失败）。
 
@@ -407,7 +437,7 @@ let exSess  // 添加/编辑动作时选中的时段号
 
 现存的坑：
 
-- **`KEY = "macros_v1"` 但 schema 已经是 `v: 4`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里的 `o.v < 2` / `< 3` / `< 4` 分支。
+- **`KEY = "macros_v1"` 但 schema 已经是 `v: 11`。** 键名没跟着升，是历史遗留，别去改（改了会丢用户数据）。版本迁移靠 `migrate()` 里一串 `o.v < N` 分支（每块结尾都写 `s.v = N`，所以新块必须排在所有更低版本的块之后，否则版本号会被往回覆盖）。
 - **食物库墓碑 120 天后会被剪掉。** 剪掉之后，如果某个设备还留着老的 `lib` 条目（`ts: 0` 的种子尤其），它可能重新出现。跟 `tomb` 是同一个取舍，日常用不到这个时间尺度。
 - **同名动作只会匹配到一条计划项。** `doneRec()` 取第一条同名记录；同一天同一动作记了两次，第二条会落到「计划外」分组。统计和曲线不受影响（`exSessions` 会把它们并起来）。
 - **`quickParse()` 的模糊匹配靠 `Object.keys()` 顺序**，第一个 `includes` 命中就赢，结果不稳定。
@@ -417,7 +447,7 @@ let exSess  // 添加/编辑动作时选中的时段号
 
 ## 改代码时的约定
 
-- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-11"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
+- **每次改动要顺手更新 `APP_VERSION`**（目前 `"2026-09-11.2"`，用日期串，同一天多次发布加 `.N`）。设置页「检查更新」是 `location.replace(pathname + "?u=" + Date.now())` 绕缓存重载，用户靠版本号确认自己刷到新版了。
 - 新增持久化字段：在 `blank()` 里加默认值，在 `migrate()` 里处理老数据，在 `syncPayload()` 里决定要不要同步，在 `merge()` 里定义合并策略。**四个地方都要过一遍**，漏一个就会出现「同步后字段消失」。
 - 新增记录类实体：必须有 `id`（用 `newId()`）和 `ts`，删除走 `removeRec()` 以写墓碑。
 - 颜色只用 `:root` 里的 CSS 变量（`--carb` 橙 / `--prot` 青 / `--fat` 紫 / `--lift` 蓝 / `--over` 红 / `--ok` 绿），不要写死色值。数字一律用 `--mono` 字体加 `font-variant-numeric: tabular-nums`。
@@ -449,8 +479,8 @@ let exSess  // 添加/编辑动作时选中的时段号
 五集群（`fir` / `nibi` / `rorqual` / `narval` / `trillium`）的 FairShare 与作业状态，
 由 **`research` session 的 `/loop 5h`** 统一采集，结果缓存在：
 
-- WSL：`/mnt/d/FangzhengHuang/projects/_cluster_status/latest.md`
-- Windows：`d:\FangzhengHuang\projects\_cluster_status\latest.md`
+- WSL：`/mnt/d/FangzhengHuang/projects/research/cluster-monitoring/latest.md`
+- Windows：`d:\FangzhengHuang\projectsesearchuster-monitoringatest.md`
 
 **本 session 需要集群状态时，直接 `cat` 这个文件即可** —— 不要自己 ssh、
 不要自己跑 `sshare` / `squeue`、不要自己建 ControlMaster。
@@ -458,20 +488,20 @@ let exSess  // 添加/编辑动作时选中的时段号
 5 小时刷新一次，对排队/FairShare 这种慢变量足够。
 
 ```bash
-cat /mnt/d/FangzhengHuang/projects/_cluster_status/last_poll_utc.txt   # 新鲜度
-cat /mnt/d/FangzhengHuang/projects/_cluster_status/latest.md           # 快照
+cat /mnt/d/FangzhengHuang/projects/research/cluster-monitoring/last_poll_utc.txt   # 新鲜度
+cat /mnt/d/FangzhengHuang/projects/research/cluster-monitoring/latest.md           # 快照
 ```
 
 快照过期（>5h）且确实需要更新数据时，**登记请求**而不是自己轮询：
 
 ```bash
-bash /mnt/d/FangzhengHuang/projects/_cluster_status/request_poll.sh "<项目>: <为什么需要>"
+bash /mnt/d/FangzhengHuang/projects/research/cluster-monitoring/request_poll.sh "<项目>: <为什么需要>"
 ```
 
 `research` 的 loop 会在下一 tick 补采并清空请求。
 
 MFA 纪律：master 过期时由**用户本人**在 WSL 执行 `ssh -fN <别名>` 确认 Duo；
-Claude 不代做 MFA。协议细节见 `_cluster_status/README.md`，
+Claude 不代做 MFA。协议细节见 `cluster-monitoring/README.md`，
 集群运维经验见 `sa3c-fpn/docs/CLUSTER_OPS.md`。
 
 **调度机制**（优先级公式、FairShare 定义链、`bN` 墙钟档位、backfill 预留门槛）：

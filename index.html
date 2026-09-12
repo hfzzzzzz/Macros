@@ -252,6 +252,22 @@ button{background:none;border:none;padding:0;cursor:pointer}
 .readout b{color:var(--ink);font-weight:600}
 .readout b.ok{color:var(--ok)} .readout b.bad{color:var(--over)}
 
+/* 一周七天的系数编辑：一行 = 星期 + 名称 + 碳水/蛋白/脂肪 + 当天目标热量 */
+.dkhead,.dkrow{display:flex;align-items:center;gap:5px}
+.dkhead{font-size:10px;letter-spacing:.04em;color:var(--ink-faint);padding-bottom:4px}
+.dkrow{padding:3px 0}
+.dkrow .dw,.dkhead .w{flex:none;width:28px;font-family:var(--mono);font-size:11.5px;color:var(--ink-mute)}
+.dkhead .n{flex:1;min-width:0}
+.dkhead .k{flex:none;width:44px;text-align:center}
+.dkhead .t,.dkrow .dt{flex:none;width:48px;text-align:right}
+.dkrow .dt{font-family:var(--mono);font-size:11px;color:var(--ink-faint);font-variant-numeric:tabular-nums}
+.dkrow input{background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+  padding:5px 3px;outline:none;color:var(--ink);font-size:12px;text-align:center;
+  font-family:var(--mono);font-variant-numeric:tabular-nums}
+.dkrow input.dn{flex:1;min-width:0;width:auto;font-family:var(--sans);text-align:left;padding-left:7px}
+.dkrow input.dk{flex:none;width:44px}
+.dkrow.now .dw{color:var(--ink);font-weight:600}
+
 .trendrow{display:flex;align-items:center;gap:9px;padding:6px 0}
 .trendrow .td{font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);width:42px;flex:none}
 .trendrow .bars{flex:1;display:flex;flex-direction:column;gap:2.5px}
@@ -297,11 +313,24 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-09-11";
+const APP_VERSION = "2026-09-11.2";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
 const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+/* 一周七天各自的营养系数（周一 = 0），出厂值按训练分化排：
+   练大肌群的日子碳水高，休息日回落；蛋白和脂肪全周不变。
+   这只是出厂清单，真正在用的是 S.dayK，用户在设置里改。 */
+const DAYK = [
+  { n: "胸", c: 3, p: 1.5, f: 0.5 },
+  { n: "背", c: 3, p: 1.5, f: 0.5 },
+  { n: "肩", c: 2.5, p: 1.5, f: 0.5 },
+  { n: "手臂", c: 2.5, p: 1.5, f: 0.5 },
+  { n: "休息", c: 2, p: 1.5, f: 0.5 },
+  { n: "腿", c: 3.5, p: 1.5, f: 0.5 },
+  { n: "休息", c: 2, p: 1.5, f: 0.5 }
+];
+const DAYK_FROM = "2026-09-14";   // 按星期分配从这天起生效，之前的日子仍走统一系数
 const GIST_FILE = "macros.json";
 /* 食物库按「一份」存营养值：固体一份 = 100 g，液体一份 = 250 ml。
    老数据没有 u 字段，一律当固体，所以升级不会动到任何已有数值。 */
@@ -361,7 +390,8 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 10, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 11, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    dayFrom: DAYK_FROM, dayK: DAYK.map(d => Object.assign({}, d)),
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
     parts: PARTS.map(p => ({ name: p.name, items: p.items.slice() })), partsTs: 0,
@@ -433,6 +463,20 @@ function migrate(o) {
       sessOf(w) === (w.sess || 0) ? w : Object.assign({}, w, { sess: sessOf(w) }));
     s.v = 10;
   }
+  if (!o.v || o.v < 11) {
+    // 一周七天各自的系数。起始日之前的日子仍按统一的 kc/kp/kf 算，
+    // 所以升级不会改写任何历史日期的目标，趋势页的达成率一个数都不动。
+    s.dayK = Array.isArray(o.dayK) && o.dayK.length === 7 ? o.dayK : DAYK.map(d => Object.assign({}, d));
+    s.dayFrom = typeof o.dayFrom === "string" ? o.dayFrom : DAYK_FROM;
+    s.v = 11;
+  }
+  // 七天系数规整：缺项补出厂值，数值一律转成数字，名称去空
+  const dk = Array.isArray(s.dayK) && s.dayK.length === 7 ? s.dayK : DAYK;
+  s.dayK = dk.map((d, i) => ({
+    n: String((d && d.n) != null ? d.n : DAYK[i].n).trim(),
+    c: Number(d && d.c) || 0, p: Number(d && d.p) || 0, f: Number(d && d.f) || 0
+  }));
+  if (typeof s.dayFrom !== "string") s.dayFrom = "";
   // 目录规整：部位名去空、动作名去重去空；整个空了就退回出厂清单
   s.parts = (s.parts || []).map(p => ({
     name: String((p && p.name) || "").trim(),
@@ -550,11 +594,21 @@ function lastWeight() {
   const ks = Object.keys(S.weights).filter(k => k <= todayKey()).sort();
   return ks.length ? Number(S.weights[ks[ks.length - 1]].v) || 0 : 0;
 }
+/* 某天生效的系数：S.dayFrom 起按星期各算各的（周一 = 0），之前的日子仍走统一的 kc/kp/kf。
+   date 传空就是统一系数——设置页拿它显示「起始日之前」那一档。 */
+function coefOn(date) {
+  if (S.dayFrom && date && date >= S.dayFrom) {
+    const d = S.dayK[dowIndex(date)];
+    if (d) return { c: d.c, p: d.p, f: d.f, n: d.n, day: true };
+  }
+  return { c: S.kc, p: S.kp, f: S.kf, n: "", day: false };
+}
 /* 目标体重只来自 S.weight（设置里手填），跟 S.weights 的体重记录彻底分开：
-   记录归记录，随便记不会动到营养目标。要同步过去得在设置里主动点一下。 */
-function targets() {
-  const w = S.weight, c = w * S.kc, p = w * S.kp, f = w * S.kf;
-  return { c, p, f, kcal: c * KCAL.c + p * KCAL.p + f * KCAL.f, w };
+   记录归记录，随便记不会动到营养目标。要同步过去得在设置里主动点一下。
+   系数则按日期取，所以训练日和休息日的目标不一样。 */
+function targets(date) {
+  const k = coefOn(date), w = S.weight, c = w * k.c, p = w * k.p, f = w * k.f;
+  return { c, p, f, kcal: c * KCAL.c + p * KCAL.p + f * KCAL.f, w, k };
 }
 function eatenOn(date) {
   const t = { c: 0, p: 0, f: 0 };
@@ -677,10 +731,10 @@ function gauge(cls, label, left, target, eaten) {
 }
 
 function renderToday() {
-  const t = targets(), e = eatenOn(cursor), isT = cursor === todayKey();
+  const t = targets(cursor), e = eatenOn(cursor), isT = cursor === todayKey();
   const ex = exOn(cursor);
   let h = `<div class="datebar"><button class="nav" id="prevd">‹</button>
-    <div class="d">${cursor}${isT ? " · 今天" : ""} · 目标 ${r1(t.w)}kg</div>
+    <div class="d">${cursor}${isT ? " · 今天" : ""} · ${t.k.n ? esc(t.k.n) : "目标"} ${r1(t.w)}kg</div>
     <button class="nav" id="nextd">›</button></div>
   <div class="hero">${gauge("c", "碳水", t.c - e.c, t.c, e.c)}${gauge("p", "蛋白", t.p - e.p, t.p, e.p)}${gauge("f", "脂肪", t.f - e.f, t.f, e.f)}</div>
   <p class="hero-cap">还可摄入 (g)</p>
@@ -1323,7 +1377,7 @@ function renderTrend() {
     </div><div class="card">`;
   let n = 0, sc = 0, sp = 0, sf = 0, td = 0;
   for (const d of days) {
-    const t = targets(), e = eatenOn(d), ex = exOn(d);
+    const t = targets(d), e = eatenOn(d), ex = exOn(d);
     const has = e.c + e.p + e.f > 0;
     if (has) { n++; sc += e.c / t.c; sp += e.p / t.p; sf += e.f / t.f; }
     if (ex.length) td++;
@@ -1552,7 +1606,18 @@ function progressCard() {
 
 /* ---------------- 设置 ---------------- */
 function renderSettings() {
-  const t = targets(), lw = lastWeight();
+  const t = targets(todayKey()), t0 = targets(""), lw = lastWeight();
+  const dfOn = !!S.dayFrom, tdi = dowIndex(todayKey());
+  const dkRows = S.dayK.map((d, i) => {
+    const kc = S.weight * (d.c * KCAL.c + d.p * KCAL.p + d.f * KCAL.f);
+    return `<div class="dkrow${i === tdi ? " now" : ""}" data-dk="${i}">
+      <span class="dw">${DOW[i]}</span>
+      <input class="dn" type="text" maxlength="6" value="${esc(d.n)}" placeholder="名称">
+      <input class="dk" type="number" inputmode="decimal" step="0.1" value="${d.c}">
+      <input class="dk" type="number" inputmode="decimal" step="0.1" value="${d.p}">
+      <input class="dk" type="number" inputmode="decimal" step="0.1" value="${d.f}">
+      <span class="dt">${nf(kc)}</span></div>`;
+  }).join("");
   const sy = S.sync;
   const lastTxt = sy.last ? new Date(sy.last).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "从未";
   scroll.innerHTML = `
@@ -1561,13 +1626,29 @@ function renderSettings() {
   <div class="card"><h4>饮食目标</h4>
     <div class="fld"><label>目标体重 KG<small>只用来乘系数算目标，跟体重记录互不影响</small></label>
       <input id="s_w" type="number" inputmode="decimal" step="0.1" value="${r1(S.weight)}"></div>
-    <div class="fld"><label>碳水 g/kg</label><input id="s_kc" type="number" inputmode="decimal" step="0.1" value="${S.kc}"></div>
+    <div class="fld"><label>碳水 g/kg${dfOn ? `<small>${esc(S.dayFrom)} 之前的日子用这一档</small>` : ""}</label>
+      <input id="s_kc" type="number" inputmode="decimal" step="0.1" value="${S.kc}"></div>
     <div class="fld"><label>蛋白 g/kg</label><input id="s_kp" type="number" inputmode="decimal" step="0.1" value="${S.kp}"></div>
     <div class="fld"><label>脂肪 g/kg</label><input id="s_kf" type="number" inputmode="decimal" step="0.1" value="${S.kf}"></div>
-    <div class="readout" style="margin-top:10px">每日目标 <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g<br>
-      <b>${nf(t.kcal)}</b> kcal · <b>${r1(t.kcal / t.w)}</b> kcal/kg</div>
+    <div class="readout" style="margin-top:10px">${dfOn ? "起始日之前" : "每日目标"} <b>${r0(t0.c)}</b> / <b>${r0(t0.p)}</b> / <b>${r0(t0.f)}</b> g<br>
+      <b>${nf(t0.kcal)}</b> kcal · <b>${r1(t0.kcal / t0.w)}</b> kcal/kg</div>
     ${lw ? `<div class="readout" style="margin-top:6px">最近一次体重记录 <b>${r1(lw)}</b> kg</div>${
       Math.abs(lw - S.weight) > 0.05 ? `<div class="btnrow"><button id="s_wsync">目标体重改用 ${r1(lw)} kg</button></div>` : ""}` : ""}
+  </div>
+
+  <div class="card"><h4>按星期分配</h4>
+    <div class="fld"><label>起始日<small>${dfOn ? "这天起每天各用各的系数" : "填一天开启；留空则所有日期共用上面的统一系数"}</small></label>
+      <input id="s_dfrom" class="wide" type="date" value="${esc(S.dayFrom)}"></div>
+    ${dfOn ? `<div class="dkhead" style="margin-top:9px"><span class="w"></span><span class="n">名称</span>
+      <span class="k">碳水</span><span class="k">蛋白</span><span class="k">脂肪</span><span class="t">kcal</span></div>
+    ${dkRows}
+    <div class="readout" style="margin-top:9px">今天 ${DOW[tdi]}${t.k.n ? " · " + esc(t.k.n) : ""} 目标
+      <b>${r0(t.c)}</b> / <b>${r0(t.p)}</b> / <b>${r0(t.f)}</b> g · <b>${nf(t.kcal)}</b> kcal</div>
+    <div class="btnrow"><button id="s_dkdef">恢复出厂分配</button></div>` : ""}
+    <div class="readout" style="font-family:var(--sans);font-size:12px;line-height:1.6;color:var(--ink-faint);margin-top:9px">
+      名称只是标签（练哪个部位 / 休息），不影响计算；系数是每公斤目标体重的克数。
+      起始日之前的历史目标不受影响。
+    </div>
   </div>
 
   <div class="card"><h4>身体记录</h4>
@@ -1636,6 +1717,25 @@ function renderSettings() {
   bind("#s_kc", el => S.kc = parseFloat(el.value) || 0);
   bind("#s_kp", el => S.kp = parseFloat(el.value) || 0);
   bind("#s_kf", el => S.kf = parseFloat(el.value) || 0);
+  bind("#s_dfrom", el => S.dayFrom = /^\d{4}-\d{2}-\d{2}$/.test(el.value) ? el.value : "");
+  // 七天系数：四个格子按位置取，名称过 trim，数值负数一律归 0
+  scroll.querySelectorAll(".dkrow").forEach(row => {
+    const i = +row.dataset.dk;
+    row.querySelectorAll("input").forEach((el, j) => el.onchange = () => {
+      const d = S.dayK[i];
+      if (j === 0) d.n = el.value.trim();
+      else {
+        const v = Math.max(0, parseFloat(el.value) || 0);
+        d[["c", "p", "f"][j - 1]] = v;
+      }
+      touchSettings(); save(); render(); queueSync();
+    });
+  });
+  const dkd = q("#s_dkdef");
+  if (dkd) dkd.onclick = () => {
+    S.dayK = DAYK.map(d => Object.assign({}, d));
+    touchSettings(); save(); render(); queueSync(); toast("已恢复出厂分配");
+  };
   q("#y_tok").onchange = e => { S.sync.token = e.target.value.trim(); save(); };
   q("#y_gid").onchange = e => { S.sync.gistId = e.target.value.trim(); save(); };
   q("#y_new").onclick = createGist;
@@ -1714,6 +1814,9 @@ function merge(local, remote) {
     out.weight = remote.weight; out.kc = remote.kc; out.kp = remote.kp;
     out.kf = remote.kf; out.settingsTs = remote.settingsTs;
     out.activePlan = remote.activePlan || "";
+    // 老版本的对端没有这两个字段，别让它把本机的七天系数抹掉
+    if (Array.isArray(remote.dayK) && remote.dayK.length === 7) out.dayK = remote.dayK;
+    if (typeof remote.dayFrom === "string") out.dayFrom = remote.dayFrom;
   }
   // 动作目录整体 LWW，用自己的时间戳 —— 改目录不该顺带覆盖体重和系数
   if ((remote.partsTs || 0) > (local.partsTs || 0) && Array.isArray(remote.parts) && remote.parts.length) {
@@ -1731,7 +1834,8 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 10, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 11, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    dayFrom: S.dayFrom || "", dayK: S.dayK,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
     plans: S.plans, activePlan: S.activePlan, routines: S.routines, meas: S.meas,
@@ -2438,11 +2542,12 @@ function download(name, text, type) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
 }
 function exportCSV() {
-  const head = "日期,餐次,食物,分量,单位,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,目标体重kg\n";
+  const head = "日期,餐次,食物,分量,单位,碳水g,蛋白g,脂肪g,热量kcal,目标碳水,目标蛋白,目标脂肪,目标体重kg,日型\n";
   const rows = S.entries.slice().sort((a, b) => a.date < b.date ? -1 : 1).map(e => {
-    const t = targets();
+    const t = targets(e.date);
     return [e.date, e.meal, '"' + e.name.replace(/"/g, '""') + '"', r1(e.g), e.u || "g", r1(e.c), r1(e.p), r1(e.f),
-      r0(e.c * 4 + e.p * 4 + e.f * 9), r1(t.c), r1(t.p), r1(t.f), r1(t.w)].join(",");
+      r0(e.c * 4 + e.p * 4 + e.f * 9), r1(t.c), r1(t.p), r1(t.f), r1(t.w),
+      '"' + (t.k.n || "").replace(/"/g, '""') + '"'].join(",");
   }).join("\n");
   download("macros_diet_" + todayKey() + ".csv", "\ufeff" + head + rows, "text/csv");
 }
