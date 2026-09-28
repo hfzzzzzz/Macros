@@ -313,7 +313,7 @@ button{background:none;border:none;padding:0;cursor:pointer}
    · API key 与 GitHub token 只留在本机，永不写入 Gist
    ===================================================================== */
 
-const APP_VERSION = "2026-09-11.2";
+const APP_VERSION = "2026-09-27";
 const KEY = "macros_v1";
 const KCAL = { c: 4, p: 4, f: 9 };
 const MEALS = ["早餐", "午餐", "晚餐", "加餐"];
@@ -331,6 +331,21 @@ const DAYK = [
   { n: "休息", c: 2, p: 1.5, f: 0.5 }
 ];
 const DAYK_FROM = "2026-09-14";   // 按星期分配从这天起生效，之前的日子仍走统一系数
+/* 2026-09-27 清零重来：饮食、训练、体重、维度四类记录里，写入时间（ts）早于这一刻的一律作废。
+   必须是固定时刻而不是「升级那一刻的 Date.now()」—— 否则晚升级的那台设备会把先升级的设备
+   在这之后新记的数据也当成旧的删掉。食物库、常规搭配、分化、动作目录、设置都不受影响。 */
+const RESET_AT = 1790562325566;   // 2026-09-27 22:25 EDT
+function wipeOld(s) {
+  const fresh = x => x && (x.ts || 0) > RESET_AT;
+  s.entries = (s.entries || []).filter(fresh);
+  s.workouts = (s.workouts || []).filter(fresh);
+  for (const f of ["weights", "meas"]) {
+    const m = {};
+    for (const d in (s[f] || {})) if (fresh(s[f][d])) m[d] = s[f][d];
+    s[f] = m;
+  }
+  return s;
+}
 const GIST_FILE = "macros.json";
 /* 食物库按「一份」存营养值：固体一份 = 100 g，液体一份 = 250 ml。
    老数据没有 u 字段，一律当固体，所以升级不会动到任何已有数值。 */
@@ -390,7 +405,7 @@ let syncing = false, syncTimer = null;
 /* 食物库出厂为空：所有条目都来自你自己录入 / 导入，没有内置种子 */
 function blank() {
   return {
-    v: 11, weight: 70, kc: 3, kp: 1.7, kf: 1,
+    v: 12, weight: 70, kc: 3, kp: 1.7, kf: 1,
     dayFrom: DAYK_FROM, dayK: DAYK.map(d => Object.assign({}, d)),
     settingsTs: 0, entries: [], workouts: [], weights: {}, lib: {}, tomb: {},
     libTomb: {}, plans: [], activePlan: "", routines: [], meas: {},
@@ -470,6 +485,11 @@ function migrate(o) {
     s.dayFrom = typeof o.dayFrom === "string" ? o.dayFrom : DAYK_FROM;
     s.v = 11;
   }
+  if (!o.v || o.v < 12) {
+    // 清零重来：旧的饮食 / 训练 / 体重 / 维度记录全部作废，配置类数据原样保留
+    wipeOld(s);
+    s.v = 12;
+  }
   // 七天系数规整：缺项补出厂值，数值一律转成数字，名称去空
   const dk = Array.isArray(s.dayK) && s.dayK.length === 7 ? s.dayK : DAYK;
   s.dayK = dk.map((d, i) => ({
@@ -517,7 +537,12 @@ function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return blank();
-    return migrate(JSON.parse(raw));
+    const o = JSON.parse(raw);
+    // 清零前留一份原样备份（只留第一次的），界面里不暴露，真要找回得手动从 localStorage 取
+    if ((o.v || 0) < 12 && !localStorage.getItem(KEY + "_pre_reset")) {
+      try { localStorage.setItem(KEY + "_pre_reset", raw); } catch (e) {}
+    }
+    return migrate(o);
   } catch (e) { return blank(); }
 }
 function save() {
@@ -1824,6 +1849,9 @@ function merge(local, remote) {
   }
   // 选中的分化被合并掉了就取消选中
   if (out.activePlan && !out.plans.some(p => p.id === out.activePlan)) out.activePlan = "";
+  // 清零时刻之前的记录不管从哪一端来都不收 —— gist 里、没升级的设备上都还留着旧数据，
+  // 不在合并时拦住，下一次同步就全回来了。weights/meas 没有墓碑，只能靠这一道。
+  wipeOld(out);
   // 清理 120 天前的墓碑，控制体积
   const cut = Date.now() - 120 * 864e5;
   for (const k in out.tomb) if (out.tomb[k] < cut) delete out.tomb[k];
@@ -1834,7 +1862,7 @@ function merge(local, remote) {
 /* ---------------- Gist sync ---------------- */
 function syncPayload() {
   return {
-    v: 11, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
+    v: 12, weight: S.weight, kc: S.kc, kp: S.kp, kf: S.kf,
     dayFrom: S.dayFrom || "", dayK: S.dayK,
     settingsTs: S.settingsTs, entries: S.entries, workouts: S.workouts,
     weights: S.weights, lib: S.lib, tomb: S.tomb, libTomb: S.libTomb,
